@@ -21,6 +21,7 @@ import depositRouter from './routes/deposit'
 import withdrawRouter from './routes/withdraw'
 import vaultRouter from './routes/vault'
 import analyticsRouter from './routes/analytics'
+import adminRouter from './routes/admin'
 
 const app = express()
 
@@ -49,6 +50,9 @@ app.use('/api/deposit', depositRouter)
 app.use('/api/withdraw', withdrawRouter)
 app.use('/api/vault', vaultRouter)
 app.use('/api/analytics', analyticsRouter)
+
+// Admin routes (protected)
+app.use('/api/admin', adminRouter)
 
 // Global error handler — must always be last
 app.use(errorHandler)

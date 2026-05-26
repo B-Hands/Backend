@@ -19,10 +19,10 @@ async function fetchBlendApy(): Promise<YieldProtocol | null> {
   try {
     // Mock implementation - in production, call actual Blend API
     // https://testnet-api.blend.capital/api/v1/pool/GBUQWP3BOUZX34PISXEAMBNIZJLNCLVNX77MHAHVXHVVB4CMYAOK6BAC
-    
+
     const apyRate = 4.25;
     const tvl = 50000000;
-    
+
     return {
       name: 'Blend',
       apy: apyRate,
@@ -46,10 +46,10 @@ async function fetchStellarDexApy(): Promise<YieldProtocol | null> {
   try {
     // Mock implementation - in production, aggregate DEX pool rates
     // Could use SoroswapRouter or other DEX aggregators
-    
+
     const apyRate = 3.85;
     const tvl = 25000000;
-    
+
     return {
       name: 'Stellar DEX',
       apy: apyRate,
@@ -72,10 +72,10 @@ async function fetchStellarDexApy(): Promise<YieldProtocol | null> {
 async function fetchLumaApy(): Promise<YieldProtocol | null> {
   try {
     // Mock implementation - in production, call Luma API
-    
+
     const apyRate = 4.10;
     const tvl = 35000000;
-    
+
     return {
       name: 'Luma',
       apy: apyRate,
@@ -136,12 +136,31 @@ export async function scanAllProtocols(): Promise<YieldProtocol[]> {
 }
 
 /**
+ * Normalize STELLAR_NETWORK to valid network label
+ * Supports: mainnet, testnet, futurenet
+ */
+function normalizeNetwork(): string {
+  const network = process.env.STELLAR_NETWORK?.toLowerCase()
+
+  const validNetworks = ['mainnet', 'testnet', 'futurenet']
+  if (!network || !validNetworks.includes(network)) {
+    throw new Error(
+      `Invalid STELLAR_NETWORK: "${process.env.STELLAR_NETWORK}". Must be one of: ${validNetworks.join(', ')}`
+    )
+  }
+
+  // Map to uppercase for database storage
+  return network.toUpperCase()
+}
+
+/**
  * Save protocol rates to database for historical tracking
  */
 async function saveProtocolRates(protocols: YieldProtocol[]): Promise<void> {
   try {
+    const networkLabel = normalizeNetwork()
+
     for (const protocol of protocols) {
-      const networkValue = process.env.STELLAR_NETWORK === 'mainnet' ? 'MAINNET' : 'TESTNET';
       await prisma.protocolRate.create({
         data: {
           protocolName: protocol.name,
@@ -150,7 +169,7 @@ async function saveProtocolRates(protocols: YieldProtocol[]): Promise<void> {
           // passing number values is enough for Prisma to coerce.
           supplyApy: protocol.apy as any,
           tvl: protocol.tvl === undefined ? undefined : (protocol.tvl as any),
-          network: networkValue as any,
+          network: networkLabel as any,
         },
       });
     }
