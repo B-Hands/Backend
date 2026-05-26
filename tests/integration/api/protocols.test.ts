@@ -64,16 +64,22 @@ describe("Protocols routes", () => {
   });
 
   describe("GET /api/protocols/agent/status", () => {
-    it("returns 404 when no status exists", async () => {
-      mockDb.agentLog.findFirst.mockResolvedValue(null);
-
+    it("returns agent status from loop with real health data", async () => {
       const res = await request(app).get("/api/protocols/agent/status");
 
-      expect(res.status).toBe(404);
-      expect(res.body).toEqual({ error: "Agent status not found" });
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data).toHaveProperty('isRunning');
+      expect(res.body.data).toHaveProperty('healthStatus');
+      expect(res.body.data).toHaveProperty('lastRebalanceAt');
+      expect(res.body.data).toHaveProperty('currentProtocol');
+      expect(res.body.data).toHaveProperty('currentApy');
+      expect(res.body.data).toHaveProperty('nextScheduledCheck');
+      expect(res.body.data).toHaveProperty('lastError');
+      expect(res.body.data).toHaveProperty('latestLog');
     });
 
-    it("returns latest persisted agent status", async () => {
+    it("returns latest log as supplemental information", async () => {
       mockDb.agentLog.findFirst.mockResolvedValue({
         status: "SUCCESS",
         action: "ANALYZE",
@@ -83,15 +89,20 @@ describe("Protocols routes", () => {
       const res = await request(app).get("/api/protocols/agent/status");
 
       expect(res.status).toBe(200);
-      expect(res.body).toMatchObject({
+      expect(res.body.data.latestLog).toMatchObject({
         status: "SUCCESS",
         action: "ANALYZE",
-        updatedAt: "2026-04-26T13:00:00.000Z",
-        whatsappReply: expect.any(String),
+        createdAt: "2026-04-26T13:00:00.000Z",
       });
-      expect(mockDb.agentLog.findFirst).toHaveBeenCalledWith({
-        orderBy: { createdAt: "desc" },
-      });
+    });
+
+    it("returns null for latestLog when no logs exist", async () => {
+      mockDb.agentLog.findFirst.mockResolvedValue(null);
+
+      const res = await request(app).get("/api/protocols/agent/status");
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.latestLog).toBeNull();
     });
   });
 });

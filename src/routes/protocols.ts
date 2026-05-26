@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express'
 import db from '../db'
+import { getAgentStatus } from '../agent/loop'
 import {
   formatAgentStatusReply,
   formatProtocolRatesReply,
@@ -30,24 +31,47 @@ router.get('/rates', async (req: Request, res: Response) => {
 })
 
 router.get('/agent/status', async (req: Request, res: Response) => {
-  const latest = await db.agentLog.findFirst({
-    orderBy: { createdAt: 'desc' },
-  })
+  try {
+    // Get real agent loop health instead of just latest log
+    const agentStatus = getAgentStatus()
 
-  if (!latest) {
-    return res.status(404).json({ error: 'Agent status not found' })
+    // Also fetch latest log for supplemental information
+    const latestLog = await db.agentLog.findFirst({
+      orderBy: { createdAt: 'desc' },
+    })
+
+    const data = {
+      isRunning: agentStatus.isRunning,
+      healthStatus: agentStatus.healthStatus,
+      lastRebalanceAt: agentStatus.lastRebalanceAt?.toISOString() || null,
+      currentProtocol: agentStatus.currentProtocol,
+      currentApy: agentStatus.currentApy ? Number(agentStatus.currentApy.toFixed(2)) : null,
+      nextScheduledCheck: agentStatus.nextScheduledCheck.toISOString(),
+      lastError: agentStatus.lastError,
+      latestLog: latestLog ? {
+        status: latestLog.status,
+        action: latestLog.action,
+        createdAt: latestLog.createdAt.toISOString(),
+      } : null,
+      timestamp: new Date().toISOString(),
+    }
+
+    return res.status(200).json({
+      success: true,
+      data,
+      whatsappReply: formatAgentStatusReply({
+        status: agentStatus.healthStatus,
+        action: 'STATUS_CHECK',
+        updatedAt: new Date().toISOString(),
+      }),
+    })
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+    return res.status(500).json({
+      success: false,
+      error: errorMessage,
+    })
   }
-
-  const data = {
-    status: latest.status,
-    action: latest.action,
-    updatedAt: latest.createdAt.toISOString(),
-  }
-
-  return res.status(200).json({
-    ...data,
-    whatsappReply: formatAgentStatusReply(data),
-  })
 })
 
 export default router

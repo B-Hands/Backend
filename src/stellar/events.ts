@@ -6,11 +6,11 @@ import { ContractEvent, DepositEvent, WithdrawEvent, RebalanceEvent, EventMetric
 import { logger } from '../utils/logger';
 import { config } from '../config';
 import { DeadLetterQueue } from './dlq';
-import { 
-  ContractEventSchema, 
-  DepositEventSchema, 
-  WithdrawEventSchema, 
-  RebalanceEventSchema 
+import {
+  ContractEventSchema,
+  DepositEventSchema,
+  WithdrawEventSchema,
+  RebalanceEventSchema
 } from '../validators/event-validator';
 
 const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || '';

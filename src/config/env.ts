@@ -8,6 +8,37 @@ function requireEnv(key: string): string {
 }
 
 /**
+ * Validate all required environment variables at startup
+ * Fails fast with clear error messages
+ */
+function validateAllRequiredEnvVars(): void {
+  const requiredVars = [
+    'STELLAR_NETWORK',
+    'STELLAR_RPC_URL',
+    'STELLAR_AGENT_SECRET_KEY',
+    'VAULT_CONTRACT_ID',
+    'USDC_TOKEN_ADDRESS',
+    'ANTHROPIC_API_KEY',
+    'DATABASE_URL',
+    'JWT_SEED',
+  ]
+
+  const missing: string[] = []
+  for (const key of requiredVars) {
+    if (!process.env[key]) {
+      missing.push(key)
+    }
+  }
+
+  if (missing.length > 0) {
+    const missingList = missing.map(k => `  - ${k}`).join('\n')
+    throw new Error(
+      `Critical environment variables are missing:\n${missingList}\n\nPlease set these variables before starting the application.`
+    )
+  }
+}
+
+/**
  * CRITICAL: Validate Stellar network to prevent testnet/mainnet mix-ups
  * Protects against accidental mainnet transactions with testnet keys
  */
@@ -58,6 +89,9 @@ function validateStellarKey(secretKey: string, network: 'testnet' | 'mainnet' | 
 const stellarNetwork = validateStellarNetwork(requireEnv('STELLAR_NETWORK'))
 const agentSecretKey = requireEnv('STELLAR_AGENT_SECRET_KEY')
 validateStellarKey(agentSecretKey, stellarNetwork)
+
+// Run all validations at startup
+validateAllRequiredEnvVars()
 
 export const config = {
   port: parseInt(process.env.PORT || '3001'),
