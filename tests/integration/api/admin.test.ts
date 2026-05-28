@@ -11,6 +11,12 @@ jest.mock('../../../src/config/jwt-adapter', () => ({
     },
 }));
 
+jest.mock('../../../src/middleware/rateLimiter', () => ({
+    rateLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
+    authRateLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
+    adminRateLimiter: (_req: unknown, _res: unknown, next: () => void) => next(),
+}));
+
 jest.mock('../../../src/stellar/events', () => ({
     getEventMetrics: jest.fn().mockReturnValue({
         totalProcessed: 1000,

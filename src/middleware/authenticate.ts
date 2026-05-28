@@ -21,7 +21,7 @@ export class AuthMiddleware {
     const authorization = req.header('Authorization');
 
     if (!authorization) {
-      res.status(401).json({ error: 'No token provided' });
+      res.status(401).json({ error: 'Unauthorized' });
       return;
     }
 

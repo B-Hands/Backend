@@ -29,5 +29,6 @@ export const adminRateLimiter = rateLimit({
   legacyHeaders: false,
   message: {
     error: 'Too many admin requests. Please try again later.'
-  }
+  },
+  skip: () => process.env.NODE_ENV === 'test',
 })

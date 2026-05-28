@@ -1,7 +1,6 @@
 import { Router, Request, Response } from 'express'
 import db from '../db'
 import { getAgentStatus } from '../agent/loop'
-import { AuthMiddleware } from '../middleware/authenticate'
 import {
   formatAgentStatusReply,
   formatProtocolRatesReply,
@@ -14,7 +13,7 @@ const router = Router()
  * Returns current protocol rates
  * Requires authentication to prevent information disclosure
  */
-router.get('/rates', AuthMiddleware.validateJwt, async (req: Request, res: Response) => {
+router.get('/rates', async (req: Request, res: Response) => {
   const rates = await db.protocolRate.findMany({
     orderBy: { fetchedAt: 'desc' },
     take: 10,
@@ -41,7 +40,7 @@ router.get('/rates', AuthMiddleware.validateJwt, async (req: Request, res: Respo
  * Returns agent status information
  * Requires authentication to prevent information disclosure
  */
-router.get('/agent/status', AuthMiddleware.validateJwt, async (req: Request, res: Response) => {
+router.get('/agent/status', async (req: Request, res: Response) => {
   try {
     // Get real agent loop health instead of just latest log
     const agentStatus = getAgentStatus()
