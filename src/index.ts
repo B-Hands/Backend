@@ -22,6 +22,7 @@ import withdrawRouter from './routes/withdraw'
 import vaultRouter from './routes/vault'
 import analyticsRouter from './routes/analytics'
 import adminRouter from './routes/admin'
+import metricsRouter from './routes/metrics'
 import { corsMiddleware, jsonBodyParser, payloadSizeErrorHandler, urlencodedBodyParser } from './middleware/corsandbody'
 
 // ── Readiness state ───────────────────────────────────────────────────────────
@@ -118,6 +119,7 @@ app.use('/api/withdraw', withdrawRouter)
 app.use('/api/vault', vaultRouter)
 app.use('/api/analytics', analyticsRouter)
 
+app.use('/metrics', metricsRouter)
 // Admin routes (protected, strictest rate limit)
 app.use('/api/admin', adminRateLimiter, adminRouter)
 

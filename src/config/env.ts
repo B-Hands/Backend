@@ -1,4 +1,5 @@
 import dotenv from 'dotenv'
+import { logger } from '../utils/logger'
 dotenv.config()
 
 function requireEnv(key: string): string {
@@ -109,7 +110,7 @@ function validateStellarKey(secretKey: string, network: 'testnet' | 'mainnet' | 
   }
 
   const env = process.env.NODE_ENV || 'development'
-  console.log(`✓ Stellar Agent configured for ${network.toUpperCase()} (NODE_ENV=${env})`)
+  logger.info(`✓ Stellar Agent configured for ${network.toUpperCase()} (NODE_ENV=${env})`)
 
   if (network === 'mainnet' && env !== 'production') {
     console.warn(

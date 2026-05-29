@@ -12,6 +12,15 @@ import {
   WithdrawEventSchema,
   RebalanceEventSchema
 } from '../validators/event-validator';
+import {
+  recordEventProcessed,
+  recordEventFailed,
+  recordEventDuration,
+  updateDlqSize,
+  updateCursorLag,
+  updateLastProcessedLedger,
+  recordDbOperation
+} from '../utils/metrics';
 
 const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || '';
 const POLL_INTERVAL_MS = 5000;
@@ -58,6 +67,8 @@ function recordError(): void {
 function recordLedgerLag(latestLedger: number): void {
   metrics.ledgerLag = latestLedger - lastProcessedLedger;
   metrics.lastUpdated = new Date();
+  // Update Prometheus metrics
+  updateCursorLag(metrics.ledgerLag);
 }
 
 async function timedDbOperation<T>(fn: () => Promise<T>): Promise<T> {
@@ -65,8 +76,11 @@ async function timedDbOperation<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } finally {
-    metrics.lastDbOperationMs = Date.now() - start;
+    const duration = Date.now() - start;
+    metrics.lastDbOperationMs = duration;
     metrics.lastUpdated = new Date();
+    // Record Prometheus metric for DB operation duration
+    recordDbOperation('event_processing', duration / 1000);
   }
 }
 
@@ -327,6 +341,7 @@ async function handleRebalanceEvent(rebalanceData: RebalanceEvent, event: Contra
  * Handle contract event with persistence, idempotency, and validation (Issue #53)
  */
 export async function handleEvent(event: ContractEvent, tx: any = prisma): Promise<void> {
+  const startTime = Date.now();
   try {
     logger.info(`[Event] ${event.type} detected at ledger ${event.ledger}, tx: ${event.txHash}`);
 
@@ -390,9 +405,19 @@ export async function handleEvent(event: ContractEvent, tx: any = prisma): Promi
     );
 
     recordProcessed();
+    // Record Prometheus metrics
+    recordEventProcessed(event.type);
+    const duration = (Date.now() - startTime) / 1000;
+    recordEventDuration(event.type, duration);
     logger.info(`[Event] Successfully processed ${event.type} event`);
   } catch (error) {
     recordError();
+    // Record Prometheus metrics for failure
+    const errorType = error instanceof Error ? error.constructor.name : 'Unknown';
+    recordEventFailed(event.type, errorType);
+    const duration = (Date.now() - startTime) / 1000;
+    recordEventDuration(event.type, duration);
+    
     logger.error(`[Event Error] Failed to handle ${event.type}:`, error instanceof Error ? error.message : 'Unknown error');
     // Issue #54: Store in Dead-Letter Queue
     await DeadLetterQueue.add(event, error instanceof Error ? error.message : 'Unknown error');
@@ -456,7 +481,7 @@ async function loadLastProcessedLedger(): Promise<number> {
 /**
  * Update last processed ledger in database
  */
-async function updateLastProcessedLedger(ledger: number): Promise<void> {
+async function persistLastProcessedLedger(ledger: number): Promise<void> {
   await prisma.eventCursor.upsert({
     where: { contractId: VAULT_CONTRACT_ID },
     update: {
@@ -518,8 +543,10 @@ async function fetchEvents(startLedger: number): Promise<void> {
     }
 
     // Update cursor in database
-    await updateLastProcessedLedger(latestLedger.sequence);
+    await persistLastProcessedLedger(latestLedger.sequence);
     lastProcessedLedger = latestLedger.sequence;
+    // Update Prometheus metrics
+    updateLastProcessedLedger(latestLedger.sequence);
   } catch (error) {
     logger.error('[Event Listener] Error fetching events:', error instanceof Error ? error.message : 'Unknown error');
   }
