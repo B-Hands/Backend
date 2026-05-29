@@ -80,6 +80,20 @@ function validateStellarNetwork(network: string): 'testnet' | 'mainnet' | 'futur
   return lowerNetwork as 'testnet' | 'mainnet' | 'futurenet'
 }
 
+/** Parse `CORS_ORIGINS` / `ALLOWED_ORIGINS` (comma-separated or `*`). */
+function parseCorsOrigins(): string[] | '*' {
+  const raw = (process.env.CORS_ORIGINS ?? process.env.ALLOWED_ORIGINS)?.trim()
+  if (!raw || raw === '*') return '*'
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
+function parseByteLimit(value: string | undefined, fallback: string): string {
+  return value && /^\d+(kb|mb|b)?$/i.test(value) ? value : fallback
+}
+
 /**
  * Validate Stellar secret key format and warn on mainnet in dev.
  */
@@ -112,6 +126,12 @@ validateAllRequiredEnvVars()
 const stellarNetwork = validateStellarNetwork(requireEnv('STELLAR_NETWORK'))
 const agentSecretKey = requireEnv('STELLAR_AGENT_SECRET_KEY')
 validateStellarKey(agentSecretKey, stellarNetwork)
+
+const corsOrigins = parseCorsOrigins()
+const bodySizeLimit = parseByteLimit(
+  process.env.BODY_SIZE_LIMIT ?? process.env.BODY_LIMIT_JSON,
+  '100kb'
+)
 
 // ── Typed NODE_ENV ─────────────────────────────────────────────────────────
 type NodeEnv = 'development' | 'staging' | 'production' | 'test'
@@ -158,9 +178,12 @@ export const config = {
     cors: {
       origins: corsOrigins,
     },
+    /** Used by `corsandbody` — empty when wildcard (non-production allows all origins). */
+    allowedOrigins: corsOrigins === '*' ? [] : corsOrigins,
+    bodySizeLimit,
     bodyLimits: {
-      json: parseByteLimit(process.env.BODY_LIMIT_JSON, '1mb'),
-      urlencoded: parseByteLimit(process.env.BODY_LIMIT_URLENCODED, '1mb'),
+      json: parseByteLimit(process.env.BODY_LIMIT_JSON, bodySizeLimit),
+      urlencoded: parseByteLimit(process.env.BODY_LIMIT_URLENCODED, bodySizeLimit),
     },
     /** Global rate limiter — applied to every route */
     rateLimit: {

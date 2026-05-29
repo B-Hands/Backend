@@ -10,6 +10,9 @@ process.env.JWT_SEED = 'test-jwt-seed'
 process.env.JWT_SESSION_TTL_HOURS = '24'
 process.env.JWT_NONCE_TTL_MS = '300000'
 process.env.JWT_CLEANUP_INTERVAL_MS = '86400000'
+process.env.WALLET_ENCRYPTION_KEY =
+  process.env.WALLET_ENCRYPTION_KEY ??
+  'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2'
 
 // Generous limits so integration tests are not blocked by rate limiters (#101)
 process.env.RATE_LIMIT_MAX = '100000'
