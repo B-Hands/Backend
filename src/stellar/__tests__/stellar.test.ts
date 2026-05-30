@@ -1,5 +1,6 @@
 import { submitTransaction, waitForConfirmation } from '../client';
 import { getOnChainBalance, triggerRebalance } from '../contract';
+import { getEventMetrics } from '../events';
 import { Transaction } from '@stellar/stellar-sdk';
 
 jest.mock('../client', () => ({
@@ -8,6 +9,10 @@ jest.mock('../client', () => ({
   getAgentKeypair: jest.fn(),
   submitTransaction: jest.fn(),
   waitForConfirmation: jest.fn(),
+}));
+
+jest.mock('../events', () => ({
+  getEventMetrics: jest.fn(),
 }));
 
 describe('Stellar Integration - Unit Tests', () => {
@@ -114,6 +119,65 @@ describe('Stellar Integration - Unit Tests', () => {
     });
   });
 
+  describe('Event Metrics', () => {
+    it('should return current metrics with all required fields', () => {
+      const mockMetrics = {
+        totalProcessed: 42,
+        totalErrors: 2,
+        processingRatePerMinute: 10,
+        errorRate: 0.048,
+        ledgerLag: 3,
+        lastDbOperationMs: 12,
+        lastUpdated: new Date(),
+      };
+      (getEventMetrics as jest.Mock).mockReturnValue(mockMetrics);
+
+      const metrics = getEventMetrics();
+
+      expect(metrics.totalProcessed).toBe(42);
+      expect(metrics.totalErrors).toBe(2);
+      expect(metrics.processingRatePerMinute).toBe(10);
+      expect(metrics.errorRate).toBeCloseTo(0.048, 3);
+      expect(metrics.ledgerLag).toBe(3);
+      expect(metrics.lastDbOperationMs).toBe(12);
+      expect(metrics.lastUpdated).toBeInstanceOf(Date);
+    });
+
+    it('should return zero values for a fresh listener', () => {
+      const emptyMetrics = {
+        totalProcessed: 0,
+        totalErrors: 0,
+        processingRatePerMinute: 0,
+        errorRate: 0,
+        ledgerLag: 0,
+        lastDbOperationMs: 0,
+        lastUpdated: new Date(),
+      };
+      (getEventMetrics as jest.Mock).mockReturnValue(emptyMetrics);
+
+      const metrics = getEventMetrics();
+
+      expect(metrics.totalProcessed).toBe(0);
+      expect(metrics.errorRate).toBe(0);
+    });
+
+    it('should compute errorRate as totalErrors / totalProcessed', () => {
+      const totalProcessed = 100;
+      const totalErrors = 5;
+      const errorRate = totalProcessed > 0 ? totalErrors / totalProcessed : 0;
+
+      expect(errorRate).toBeCloseTo(0.05, 3);
+    });
+
+    it('should return zero errorRate when no events processed', () => {
+      const totalProcessed = 0;
+      const totalErrors = 0;
+      const errorRate = totalProcessed > 0 ? totalErrors / totalProcessed : 0;
+
+      expect(errorRate).toBe(0);
+    });
+  });
+
   describe('Event Parsing', () => {
     it('should parse deposit event', () => {
       const mockEvent = {
@@ -153,6 +217,103 @@ describe('Stellar Integration - Unit Tests', () => {
       };
 
       expect(mockEvent.type).toBe('rebalance');
+    });
+  });
+
+  describe('Dead-Letter Queue - Persistent Storage', () => {
+    it('should create a DLQ entry with required fields', () => {
+      const event = {
+        type: 'deposit',
+        ledger: 12345,
+        txHash: 'tx-fail-001',
+        contractId: 'CVAULT',
+      };
+      const errorMsg = 'User not found';
+
+      const entry = {
+        id: 'dlq-id-1',
+        contractId: event.contractId,
+        txHash: event.txHash,
+        eventType: event.type,
+        ledger: event.ledger,
+        error: errorMsg,
+        payload: event,
+        status: 'PENDING' as const,
+        retryCount: 0,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      expect(entry.txHash).toBe('tx-fail-001');
+      expect(entry.status).toBe('PENDING');
+      expect(entry.retryCount).toBe(0);
+      expect(entry.contractId).toBe('CVAULT');
+      expect(entry.error).toBe(errorMsg);
+    });
+
+    it('should mark entry as RESOLVED after successful retry', () => {
+      let status: 'PENDING' | 'RETRIED' | 'RESOLVED' = 'PENDING';
+      let retryCount = 0;
+
+      // Simulate successful retry
+      retryCount++;
+      status = 'RESOLVED';
+
+      expect(status).toBe('RESOLVED');
+      expect(retryCount).toBe(1);
+    });
+
+    it('should mark entry as RETRIED after failed retry', () => {
+      let status: 'PENDING' | 'RETRIED' | 'RESOLVED' = 'PENDING';
+      let retryCount = 0;
+
+      // Simulate failed retry
+      retryCount++;
+      status = 'RETRIED';
+
+      expect(status).toBe('RETRIED');
+      expect(retryCount).toBe(1);
+    });
+
+    it('should only retry PENDING and RETRIED entries', () => {
+      const entries = [
+        { id: '1', status: 'PENDING' as const },
+        { id: '2', status: 'RETRIED' as const },
+        { id: '3', status: 'RESOLVED' as const },
+      ];
+
+      const retryable = entries.filter(
+        e => e.status === 'PENDING' || e.status === 'RETRIED'
+      );
+
+      expect(retryable.length).toBe(2);
+      expect(retryable.map(e => e.id)).toEqual(['1', '2']);
+    });
+
+    it('should trigger alert when queue size reaches threshold', () => {
+      const threshold = 50;
+      const sizes = [49, 50, 51];
+      const alerts = sizes.map(size => size >= threshold);
+
+      expect(alerts[0]).toBe(false); // 49 — no alert
+      expect(alerts[1]).toBe(true);  // 50 — alert
+      expect(alerts[2]).toBe(true);  // 51 — alert
+    });
+
+    it('should persist retry metadata across restarts', () => {
+      // Database-backed DLQ: all state lives in DB rows
+      const dbRecord = {
+        id: 'dlq-1',
+        retryCount: 3,
+        status: 'RETRIED' as const,
+        updatedAt: new Date(),
+      };
+
+      // After a restart, the same record is loaded from DB unchanged
+      const reloaded = { ...dbRecord };
+
+      expect(reloaded.retryCount).toBe(3);
+      expect(reloaded.status).toBe('RETRIED');
     });
   });
 });

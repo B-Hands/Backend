@@ -4,6 +4,8 @@
  * Covers `/api/analytics/apy-history`, `/api/analytics/user-yield`, and
  * `/api/analytics/protocol-performance` for the success/auth/validation
  * scenarios listed in the linked issue.
+ *
+ * Uses reusable test factories for database setup/cleanup.
  */
 
 jest.mock('../../../src/config/jwt-adapter', () => ({
@@ -16,6 +18,7 @@ jest.mock('../../../src/config/jwt-adapter', () => ({
 const mockDb = {
     session: {
         findUnique: jest.fn(),
+        delete: jest.fn().mockResolvedValue({}),
     },
     yieldSnapshot: {
         findMany: jest.fn(),
@@ -55,6 +58,30 @@ function seedValidSession(): void {
     })
 }
 
+function seedExpiredSession(): void {
+    mockDb.session.findUnique.mockResolvedValue({
+        token: VALID_TOKEN,
+        userId: USER_ID,
+        sessionId: 'sess-1',
+        expiresAt: new Date(Date.now() - 60 * 60 * 1000), // Expired 1 hour ago
+        walletAddress: 'GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G',
+        network: 'TESTNET',
+        user: { id: USER_ID, isActive: true },
+    })
+}
+
+function seedInactiveUserSession(): void {
+    mockDb.session.findUnique.mockResolvedValue({
+        token: VALID_TOKEN,
+        userId: USER_ID,
+        sessionId: 'sess-1',
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        walletAddress: 'GBUQWP3BOUZX34ULNQG23RQ6F4BVWCIBTICSQYY2T4YJJWUDLVXVVU6G',
+        network: 'TESTNET',
+        user: { id: USER_ID, isActive: false },
+    })
+}
+
 describe('Analytics routes', () => {
     beforeEach(() => {
         jest.clearAllMocks()
@@ -74,6 +101,26 @@ describe('Analytics routes', () => {
             const res = await request(app)
                 .get('/api/analytics/apy-history')
                 .set('Authorization', 'Bearer invalid-token')
+
+            expect(res.status).toBe(401)
+        })
+
+        it('returns 401 when session is expired', async () => {
+            seedExpiredSession()
+
+            const res = await request(app)
+                .get('/api/analytics/apy-history')
+                .set('Authorization', `Bearer ${VALID_TOKEN}`)
+
+            expect(res.status).toBe(401)
+        })
+
+        it('returns 401 when user is inactive', async () => {
+            seedInactiveUserSession()
+
+            const res = await request(app)
+                .get('/api/analytics/apy-history')
+                .set('Authorization', `Bearer ${VALID_TOKEN}`)
 
             expect(res.status).toBe(401)
         })
@@ -129,11 +176,55 @@ describe('Analytics routes', () => {
             expect(res.body.error).toBe('Validation error')
             expect(res.body.details).toBeDefined()
         })
+
+        it('returns 400 for missing period parameter with invalid type', async () => {
+            seedValidSession()
+
+            const res = await request(app)
+                .get('/api/analytics/apy-history?period=invalid')
+                .set('Authorization', `Bearer ${VALID_TOKEN}`)
+
+            expect(res.status).toBe(400)
+            expect(res.body.error).toBe('Validation error')
+        })
+
+        it('handles empty snapshot data gracefully', async () => {
+            seedValidSession()
+            mockDb.yieldSnapshot.findMany.mockResolvedValue([])
+
+            const res = await request(app)
+                .get('/api/analytics/apy-history?period=7d')
+                .set('Authorization', `Bearer ${VALID_TOKEN}`)
+
+            expect(res.status).toBe(200)
+            expect(res.body.points).toEqual([])
+            expect(res.body.userId).toBe(USER_ID)
+        })
     })
 
     describe('GET /api/analytics/user-yield', () => {
         it('returns 401 when no token is provided', async () => {
             const res = await request(app).get('/api/analytics/user-yield')
+
+            expect(res.status).toBe(401)
+        })
+
+        it('returns 401 when session is expired', async () => {
+            seedExpiredSession()
+
+            const res = await request(app)
+                .get('/api/analytics/user-yield')
+                .set('Authorization', `Bearer ${VALID_TOKEN}`)
+
+            expect(res.status).toBe(401)
+        })
+
+        it('returns 401 when user is inactive', async () => {
+            seedInactiveUserSession()
+
+            const res = await request(app)
+                .get('/api/analytics/user-yield')
+                .set('Authorization', `Bearer ${VALID_TOKEN}`)
 
             expect(res.status).toBe(401)
         })
@@ -199,6 +290,55 @@ describe('Analytics routes', () => {
 
             expect(res.status).toBe(400)
             expect(res.body.error).toBe('Validation error')
+        })
+
+        it('handles user with no positions gracefully', async () => {
+            seedValidSession()
+            mockDb.position.findMany.mockResolvedValue([])
+            mockDb.yieldSnapshot.findMany.mockResolvedValue([])
+
+            const res = await request(app)
+                .get('/api/analytics/user-yield?period=30d')
+                .set('Authorization', `Bearer ${VALID_TOKEN}`)
+
+            expect(res.status).toBe(200)
+            expect(res.body.totalYield).toBe(0)
+            expect(res.body.periodYield).toBe(0)
+            expect(res.body.averageApy).toBe(0)
+            expect(res.body.points).toEqual([])
+        })
+
+        it('correctly calculates period yield from snapshots', async () => {
+            seedValidSession()
+            mockDb.position.findMany.mockResolvedValue([
+                { yieldEarned: 200, assetSymbol: 'USDC' },
+            ])
+            mockDb.yieldSnapshot.findMany.mockResolvedValue([
+                {
+                    snapshotAt: new Date('2026-05-01T00:00:00Z'),
+                    yieldAmount: 25,
+                    apy: 5.5,
+                },
+                {
+                    snapshotAt: new Date('2026-05-02T00:00:00Z'),
+                    yieldAmount: 30,
+                    apy: 6.0,
+                },
+                {
+                    snapshotAt: new Date('2026-05-03T00:00:00Z'),
+                    yieldAmount: 35,
+                    apy: 6.5,
+                },
+            ])
+
+            const res = await request(app)
+                .get('/api/analytics/user-yield?period=7d')
+                .set('Authorization', `Bearer ${VALID_TOKEN}`)
+
+            expect(res.status).toBe(200)
+            expect(res.body.totalYield).toBe(200)
+            expect(res.body.periodYield).toBe(90) // 25 + 30 + 35
+            expect(res.body.averageApy).toBeCloseTo(6) // (5.5 + 6.0 + 6.5) / 3
         })
     })
 
@@ -276,6 +416,111 @@ describe('Analytics routes', () => {
 
             expect(res.status).toBe(400)
             expect(res.body.error).toBe('Validation error')
+        })
+
+        it('handles multiple protocols with different assets and networks', async () => {
+            mockDb.protocolRate.findMany.mockResolvedValue([
+                {
+                    protocolName: 'blend',
+                    assetSymbol: 'USDC',
+                    network: 'TESTNET',
+                    supplyApy: 4.5,
+                    tvl: 1_000_000,
+                    fetchedAt: new Date('2026-05-01T00:00:00Z'),
+                },
+                {
+                    protocolName: 'blend',
+                    assetSymbol: 'XLM',
+                    network: 'TESTNET',
+                    supplyApy: 3.5,
+                    tvl: 500_000,
+                    fetchedAt: new Date('2026-05-01T00:00:00Z'),
+                },
+                {
+                    protocolName: 'blend',
+                    assetSymbol: 'USDC',
+                    network: 'MAINNET',
+                    supplyApy: 5.0,
+                    tvl: 10_000_000,
+                    fetchedAt: new Date('2026-05-01T00:00:00Z'),
+                },
+                {
+                    protocolName: 'aquarius',
+                    assetSymbol: 'USDC',
+                    network: 'TESTNET',
+                    supplyApy: 3.8,
+                    tvl: 750_000,
+                    fetchedAt: new Date('2026-05-01T00:00:00Z'),
+                },
+            ])
+
+            const res = await request(app).get(
+                '/api/analytics/protocol-performance',
+            )
+
+            expect(res.status).toBe(200)
+            expect(res.body.protocols).toHaveLength(4) // 4 unique protocol/asset/network combinations
+            
+            // Verify each combination is grouped correctly
+            const blendUsdcTestnet = res.body.protocols.find(
+                (p: any) => p.protocol === 'blend' && p.asset === 'USDC' && p.network === 'TESTNET'
+            )
+            expect(blendUsdcTestnet).toBeDefined()
+            expect(blendUsdcTestnet.protocol).toBe('blend')
+            expect(blendUsdcTestnet.asset).toBe('USDC')
+            expect(blendUsdcTestnet.network).toBe('TESTNET')
+        })
+
+        it('handles protocols with null TVL values', async () => {
+            mockDb.protocolRate.findMany.mockResolvedValue([
+                {
+                    protocolName: 'blueshift',
+                    assetSymbol: 'USDC',
+                    network: 'TESTNET',
+                    supplyApy: 4.2,
+                    tvl: null,
+                    fetchedAt: new Date('2026-05-01T00:00:00Z'),
+                },
+                {
+                    protocolName: 'blueshift',
+                    assetSymbol: 'USDC',
+                    network: 'TESTNET',
+                    supplyApy: 4.3,
+                    tvl: null,
+                    fetchedAt: new Date('2026-05-02T00:00:00Z'),
+                },
+            ])
+
+            const res = await request(app).get(
+                '/api/analytics/protocol-performance',
+            )
+
+            expect(res.status).toBe(200)
+            const protocol = res.body.protocols[0]
+            expect(protocol.points.every((p: any) => p.tvl === null)).toBe(true)
+        })
+
+        it('defaults to 30d period when not specified', async () => {
+            mockDb.protocolRate.findMany.mockResolvedValue([])
+
+            const res = await request(app).get(
+                '/api/analytics/protocol-performance',
+            )
+
+            expect(res.status).toBe(200)
+            expect(res.body.period).toBe('30d')
+        })
+
+        it('handles empty protocol data gracefully', async () => {
+            mockDb.protocolRate.findMany.mockResolvedValue([])
+
+            const res = await request(app).get(
+                '/api/analytics/protocol-performance?period=7d',
+            )
+
+            expect(res.status).toBe(200)
+            expect(res.body.protocols).toEqual([])
+            expect(res.body.period).toBe('7d')
         })
     })
 

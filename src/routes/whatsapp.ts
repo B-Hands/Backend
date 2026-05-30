@@ -44,7 +44,7 @@ router.post('/webhook', async (req: Request, res: Response) => {
     responseTwiml.message(response.body)
     res.type('text/xml').send(responseTwiml.toString())
   } catch (error) {
-    console.error('[WhatsApp webhook] error handling message:', error)
+    logger.error('[WhatsApp webhook] error handling message:', error)
     const errorTwiml = new twiml.MessagingResponse()
     errorTwiml.message('Sorry, something went wrong processing your request.')
     res.type('text/xml').send(errorTwiml.toString())

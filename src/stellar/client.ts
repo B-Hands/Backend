@@ -5,9 +5,9 @@ import {
   Transaction,
   TransactionBuilder,
 } from '@stellar/stellar-sdk';
+import { config } from '../config';
 import { TransactionResult } from './types';
 
-const RPC_URL = process.env.STELLAR_RPC_URL || 'https://soroban-testnet.stellar.org';
 export function resolveNetworkPassphrase(network: string | undefined): string {
   switch (network?.toLowerCase()) {
     case 'mainnet':
@@ -23,7 +23,8 @@ export function resolveNetworkPassphrase(network: string | undefined): string {
   }
 }
 
-const NETWORK_PASSPHRASE = resolveNetworkPassphrase(process.env.STELLAR_NETWORK);
+const RPC_URL = config.stellar.rpcUrl;
+const NETWORK_PASSPHRASE = resolveNetworkPassphrase(config.stellar.network);
 
 let agentKeypair: Keypair | null = null;
 let rpcServer: rpc.Server | null = null;

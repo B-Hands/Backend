@@ -11,9 +11,10 @@ import {
 } from '@stellar/stellar-sdk';
 import { getRpcServer, getNetworkPassphrase, getAgentKeypair, submitTransaction, waitForConfirmation } from './client';
 import { getKeypairForUser } from './wallet';
+import { config } from '../config';
 import { OnChainBalance, TransactionResult } from './types';
 
-const VAULT_CONTRACT_ID = process.env.VAULT_CONTRACT_ID || '';
+const VAULT_CONTRACT_ID = config.stellar.vaultContractId;
 const STROOPS_PER_TOKEN = 10_000_000n;
 
 export type VaultWriteMethod = 'deposit' | 'withdraw';

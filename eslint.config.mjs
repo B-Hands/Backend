@@ -24,6 +24,7 @@ export default [
       '@typescript-eslint/no-unused-vars': 'off',
       '@typescript-eslint/no-unsafe-function-type': 'off',
       '@typescript-eslint/no-wrapper-object-types': 'off',
+      'no-console': ['error', { allow: ['warn', 'error'] }],
     },
   },
 ]

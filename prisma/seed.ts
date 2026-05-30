@@ -4,7 +4,7 @@ import { PrismaClient } from '@prisma/client'
 const prisma = new PrismaClient()
 
 async function main() {
-  console.log('🌱 Seeding NeuroWealth database...')
+  console.warn('🌱 Seeding NeuroWealth database...')
 
   // ── 1. Test User ─────────────────────────────────────────────────────────────
   const user = await prisma.user.upsert({
@@ -18,7 +18,7 @@ async function main() {
       riskTolerance: 6,
     },
   })
-  console.log(`✅ User: ${user.displayName} (${user.id})`)
+  console.warn(`✅ User: ${user.displayName} (${user.id})`)
 
   // ── 2. Protocol Rates ─────────────────────────────────────────────────────────
   const blendRate = await prisma.protocolRate.create({
@@ -40,7 +40,7 @@ async function main() {
       network: 'TESTNET',
     },
   })
-  console.log(`✅ Protocol rates: Blend ${Number(blendRate.supplyApy) * 100}% APY, Aqua ${Number(aquaRate.supplyApy) * 100}% APY`)
+  console.warn(`✅ Protocol rates: Blend ${Number(blendRate.supplyApy) * 100}% APY, Aqua ${Number(aquaRate.supplyApy) * 100}% APY`)
 
   // ── 3. Position ───────────────────────────────────────────────────────────────
   const position = await prisma.position.create({
@@ -54,7 +54,7 @@ async function main() {
       status: 'ACTIVE',
     },
   })
-  console.log(`✅ Position: ${position.depositedAmount} USDC on ${position.protocolName}`)
+  console.warn(`✅ Position: ${position.depositedAmount} USDC on ${position.protocolName}`)
 
   // ── 4. Deposit Transaction ────────────────────────────────────────────────────
   const depositTx = await prisma.transaction.create({
@@ -73,7 +73,7 @@ async function main() {
       confirmedAt: new Date(),
     },
   })
-  console.log(`✅ Transaction: ${depositTx.amount} ${depositTx.assetSymbol} (${depositTx.txHash?.slice(0, 16)}...)`)
+  console.warn(`✅ Transaction: ${depositTx.amount} ${depositTx.assetSymbol} (${depositTx.txHash?.slice(0, 16)}...)`)
 
   // ── 5. Yield Snapshot ─────────────────────────────────────────────────────────
   const snapshot = await prisma.yieldSnapshot.create({
@@ -84,7 +84,7 @@ async function main() {
       principalAmount: 5000,
     },
   })
-  console.log(`✅ Yield snapshot: ${Number(snapshot.apy) * 100}% APY`)
+  console.warn(`✅ Yield snapshot: ${Number(snapshot.apy) * 100}% APY`)
 
   // ── 6. Agent Log ──────────────────────────────────────────────────────────────
   await prisma.agentLog.create({
@@ -108,7 +108,7 @@ async function main() {
       durationMs: 1240,
     },
   })
-  console.log(`✅ Agent log: DEPOSIT → SUCCESS`)
+  console.warn(`✅ Agent log: DEPOSIT → SUCCESS`)
 
   // ── 7. Session ────────────────────────────────────────────────────────────────
   await prisma.session.create({
@@ -122,9 +122,9 @@ async function main() {
       userAgent: 'NeuroWealth/1.0 Seed',
     },
   })
-  console.log(`✅ Session created`)
+  console.warn(`✅ Session created`)
 
-  console.log('\n🎉 Seed complete! Run: npx prisma studio')
+  console.warn('\n🎉 Seed complete! Run: npx prisma studio')
 }
 
 main()

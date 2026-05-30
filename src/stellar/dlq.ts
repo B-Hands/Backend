@@ -12,6 +12,7 @@ import * as path from 'path'
 import { xdr } from '@stellar/stellar-sdk'
 import { logger } from '../utils/logger'
 import db from '../db'
+import { updateDlqSize } from '../utils/metrics'
 
 export type DeadLetterEventStatus = 'PENDING' | 'RETRIED' | 'RESOLVED'
 
@@ -125,6 +126,8 @@ export class DeadLetterQueue {
 
     const size = await this.getSize()
     logger.warn(`[DLQ] Event added to DLQ. Size: ${size}. Tx: ${row.txHash}`)
+    // Update Prometheus metrics
+    updateDlqSize(size)
     this.checkSizeAlert(size)
     return toDomain(row)
   }
@@ -180,6 +183,9 @@ export class DeadLetterQueue {
     logger.info(
       `[DLQ Retry] Finished. Resolved: ${resolved}, Failed: ${failed}`
     )
+    // Update Prometheus metrics after retry
+    const newSize = await this.getSize()
+    updateDlqSize(newSize)
     return { resolved, failed }
   }
 

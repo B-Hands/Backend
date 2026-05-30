@@ -8,6 +8,13 @@ import { scanAllProtocols } from './scanner';
 import { executeRebalanceIfNeeded, getThresholds, logAgentAction } from './router';
 import { captureAllUserBalances, cleanupOldSnapshots } from './snapshotter';
 import { PrismaClient } from '@prisma/client';
+import {
+  updateAgentHeartbeat,
+  updateAgentStatus,
+  recordRebalanceCheck,
+  recordRebalanceTriggered,
+  recordDbOperation
+} from '../utils/metrics';
 
 const prisma = new PrismaClient();
 
@@ -64,6 +71,8 @@ async function rebalanceCheckJob(): Promise<void> {
 
   try {
     logger.info(`${jobName} started`);
+    // Update heartbeat
+    updateAgentHeartbeat();
 
     // Get all active positions
     const positions = await prisma.position.findMany({
@@ -77,6 +86,7 @@ async function rebalanceCheckJob(): Promise<void> {
 
     if (positions.length === 0) {
       logger.info('No active positions to rebalance');
+      recordRebalanceCheck('success');
       return;
     }
 
@@ -110,6 +120,7 @@ async function rebalanceCheckJob(): Promise<void> {
         lastRebalanceAt = new Date();
         currentProtocol = result.toProtocol;
         currentApy = result.improvedBy;
+        recordRebalanceTriggered();
       }
     }
 
@@ -120,6 +131,10 @@ async function rebalanceCheckJob(): Promise<void> {
       rebalancesTriggered,
       duration,
     });
+
+    // Record Prometheus metrics
+    recordRebalanceCheck('success');
+    recordDbOperation('rebalance_check', duration / 1000);
 
     logger.info(`${jobName} completed`, {
       duration,
@@ -132,10 +147,15 @@ async function rebalanceCheckJob(): Promise<void> {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     lastError = errorMessage;
 
+    const duration = Date.now() - startTime;
     logger.error(`${jobName} failed`, {
       error: errorMessage,
-      duration: Date.now() - startTime,
+      duration,
     });
+
+    // Record Prometheus metrics
+    recordRebalanceCheck('failed');
+    recordDbOperation('rebalance_check', duration / 1000);
 
     await logAgentAction('ANALYZE', 'FAILED', {
       error: errorMessage,
@@ -152,6 +172,8 @@ async function snapshotJob(): Promise<void> {
 
   try {
     logger.info(`${jobName} started`);
+    // Update heartbeat
+    updateAgentHeartbeat();
 
     // Run snapshot in background to avoid blocking rebalance checks
     captureAllUserBalances().catch(error => {
@@ -171,13 +193,18 @@ async function snapshotJob(): Promise<void> {
     }
 
     const duration = Date.now() - startTime;
+    // Record Prometheus metrics
+    recordDbOperation('snapshot_job', duration / 1000);
     logger.info(`${jobName} scheduled`, { duration });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    const duration = Date.now() - startTime;
     logger.error(`${jobName} failed`, {
       error: errorMessage,
-      duration: Date.now() - startTime,
+      duration,
     });
+    // Record Prometheus metrics
+    recordDbOperation('snapshot_job', duration / 1000);
   }
 }
 
@@ -193,6 +220,9 @@ export async function startAgentLoop(): Promise<void> {
 
   try {
     logger.info('🤖 Starting NeuroWealth Agent Loop');
+    // Update Prometheus metrics
+    updateAgentStatus('running');
+    updateAgentHeartbeat();
 
     // Run jobs immediately on startup
     logger.info('Running initial jobs...');
@@ -217,6 +247,7 @@ export async function startAgentLoop(): Promise<void> {
     const scanJob = cron.schedule('0 2 * * *', async () => {
       try {
         logger.info('Daily protocol scan started');
+        updateAgentHeartbeat();
         const protocols = await scanAllProtocols();
         logger.info('Daily protocol scan complete', {
           protocolsScanned: protocols.length,
@@ -238,6 +269,8 @@ export async function startAgentLoop(): Promise<void> {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     lastError = errorMessage;
+    // Update Prometheus metrics for error state
+    updateAgentStatus('degraded');
     logger.error('Failed to start agent loop', { error: errorMessage });
     throw error;
   }
