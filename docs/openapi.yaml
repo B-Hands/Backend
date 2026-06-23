@@ -1,0 +1,663 @@
+openapi: 3.1.0
+
+info:
+  title: NeuroWealth API
+  version: 1.0.0
+  description: |
+    REST API for the NeuroWealth platform — AI-assisted portfolio management
+    backed by Stellar smart contracts.
+
+    **Breaking-change policy:** This API follows semantic versioning. Breaking
+    changes (removed fields, changed response shapes, new required params)
+    increment the major version and are announced in CHANGELOG.md at least two
+    weeks before release.
+
+servers:
+  - url: http://localhost:{port}
+    description: Local development
+    variables:
+      port:
+        default: '3000'
+  - url: https://api.neurowealth.app
+    description: Production
+
+tags:
+  - name: health
+    description: Liveness and readiness probes
+  - name: auth
+    description: Wallet-based authentication (Stellar SIWE challenge/verify)
+  - name: portfolio
+    description: Portfolio positions, performance, and NLP queries
+  - name: transactions
+    description: Transaction history and details
+  - name: deposit
+    description: Deposit flows
+  - name: withdraw
+    description: Withdrawal flows
+  - name: vault
+    description: Vault / savings product
+  - name: admin
+    description: Admin-only management endpoints
+
+# ── Security schemes ─────────────────────────────────────────────────────────
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT issued by `/api/auth/verify`. Include as `Authorization: Bearer <token>`.
+    AdminToken:
+      type: apiKey
+      in: header
+      name: X-Admin-Token
+      description: Static admin token set via `ADMIN_SECRET` env var. Required for all `/api/admin/*` routes.
+    InternalToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Token
+      description: Service-to-service token for internal calls (e.g. Stellar event relayer).
+
+  # ── Reusable schemas ───────────────────────────────────────────────────────
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: Unauthorized
+        details:
+          description: Optional structured detail (array or object)
+          oneOf:
+            - type: array
+              items: {}
+            - type: object
+
+    HealthResponse:
+      type: object
+      required: [status, timestamp, version, environment]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        timestamp:
+          type: string
+          format: date-time
+        version:
+          type: string
+          example: 1.0.0
+        environment:
+          type: string
+          enum: [development, test, production]
+
+    AuthChallengeResponse:
+      type: object
+      required: [nonce, expiresAt]
+      properties:
+        nonce:
+          type: string
+          description: Random one-time nonce the wallet must sign
+          example: a3f9e2c1d0b84756
+        expiresAt:
+          type: string
+          format: date-time
+
+    AuthVerifyRequest:
+      type: object
+      required: [publicKey, signature, nonce]
+      properties:
+        publicKey:
+          type: string
+          description: Stellar G-address (Ed25519 public key)
+          example: GDQP2KPQGKIHYJGXNUIYOMHARUARCA7DJT5FO2FFOOKY3B2WSQHG4W37
+        signature:
+          type: string
+          description: Base64-encoded signature over the nonce
+        nonce:
+          type: string
+
+    AuthVerifyResponse:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+          description: JWT for use in subsequent requests
+        expiresIn:
+          type: integer
+          description: Seconds until the token expires
+          example: 86400
+
+    Portfolio:
+      type: object
+      required: [address, totalValueUsdc, positions]
+      properties:
+        address:
+          type: string
+        totalValueUsdc:
+          type: string
+          description: Total portfolio value in USDC (string to avoid float precision loss)
+          example: '12450.75'
+        pnlPercent:
+          type: string
+          example: '4.23'
+        positions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Position'
+
+    Position:
+      type: object
+      required: [asset, amount, valueUsdc]
+      properties:
+        asset:
+          type: string
+          example: XLM
+        amount:
+          type: string
+          example: '5000.0000000'
+        valueUsdc:
+          type: string
+          example: '600.00'
+        pnlPercent:
+          type: string
+
+    Transaction:
+      type: object
+      required: [id, type, amount, asset, status, createdAt]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [deposit, withdrawal, swap, vault_deposit, vault_withdraw]
+        amount:
+          type: string
+        asset:
+          type: string
+        status:
+          type: string
+          enum: [pending, confirmed, failed]
+        stellarTxHash:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    VaultPosition:
+      type: object
+      required: [balance, yieldEarned, lockUntil]
+      properties:
+        balance:
+          type: string
+        yieldEarned:
+          type: string
+        lockUntil:
+          type: string
+          format: date-time
+          nullable: true
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+paths:
+
+  # ── Health ─────────────────────────────────────────────────────────────────
+  /health:
+    get:
+      tags: [health]
+      operationId: healthCheck
+      summary: Liveness check
+      description: Returns service status, version, and environment. No auth required.
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /health/ready:
+    get:
+      tags: [health]
+      operationId: readinessCheck
+      summary: Readiness check
+      description: Returns 200 when DB and Stellar RPC are reachable, 503 otherwise.
+      responses:
+        '200':
+          description: All dependencies reachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: One or more dependencies unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ── Auth ───────────────────────────────────────────────────────────────────
+  /api/auth/challenge:
+    get:
+      tags: [auth]
+      operationId: getAuthChallenge
+      summary: Request a sign-in challenge nonce
+      parameters:
+        - in: query
+          name: publicKey
+          required: true
+          schema:
+            type: string
+          description: Stellar G-address requesting a nonce
+      responses:
+        '200':
+          description: Challenge nonce issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthChallengeResponse'
+        '400':
+          description: Invalid public key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/verify:
+    post:
+      tags: [auth]
+      operationId: verifyAuthSignature
+      summary: Verify wallet signature and issue JWT
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthVerifyRequest'
+      responses:
+        '200':
+          description: Signature valid — JWT issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthVerifyResponse'
+        '401':
+          description: Invalid or expired signature
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Invalidate the current JWT
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Session invalidated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Portfolio ──────────────────────────────────────────────────────────────
+  /api/portfolio:
+    get:
+      tags: [portfolio]
+      operationId: getPortfolio
+      summary: Get the authenticated user's portfolio
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Portfolio data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Portfolio'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/portfolio/query:
+    post:
+      tags: [portfolio]
+      operationId: queryPortfolio
+      summary: Natural-language portfolio query (NLP)
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query:
+                  type: string
+                  example: What is my XLM allocation?
+      responses:
+        '200':
+          description: NLP answer
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [answer]
+                properties:
+                  answer:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Transactions ───────────────────────────────────────────────────────────
+  /api/transactions:
+    get:
+      tags: [transactions]
+      operationId: listTransactions
+      summary: List the authenticated user's transactions
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - in: query
+          name: cursor
+          schema:
+            type: string
+          description: Pagination cursor (transaction ID)
+        - in: query
+          name: type
+          schema:
+            type: string
+            enum: [deposit, withdrawal, swap, vault_deposit, vault_withdraw]
+      responses:
+        '200':
+          description: Transaction list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Transaction'
+                  nextCursor:
+                    type: string
+                    nullable: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Deposit ────────────────────────────────────────────────────────────────
+  /api/deposit:
+    post:
+      tags: [deposit]
+      operationId: initiateDeposit
+      summary: Initiate a deposit
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [asset, amount]
+              properties:
+                asset:
+                  type: string
+                  example: USDC
+                amount:
+                  type: string
+                  example: '100.0000000'
+      responses:
+        '201':
+          description: Deposit initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [transaction]
+                properties:
+                  transaction:
+                    $ref: '#/components/schemas/Transaction'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Withdraw ───────────────────────────────────────────────────────────────
+  /api/withdraw:
+    post:
+      tags: [withdraw]
+      operationId: initiateWithdrawal
+      summary: Initiate a withdrawal
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [asset, amount, destinationAddress]
+              properties:
+                asset:
+                  type: string
+                  example: XLM
+                amount:
+                  type: string
+                  example: '50.0000000'
+                destinationAddress:
+                  type: string
+      responses:
+        '201':
+          description: Withdrawal initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [transaction]
+                properties:
+                  transaction:
+                    $ref: '#/components/schemas/Transaction'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Vault ──────────────────────────────────────────────────────────────────
+  /api/vault:
+    get:
+      tags: [vault]
+      operationId: getVaultPosition
+      summary: Get the user's vault position
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Vault position
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultPosition'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/vault/deposit:
+    post:
+      tags: [vault]
+      operationId: depositToVault
+      summary: Move funds into the vault
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount:
+                  type: string
+                  example: '200.0000000'
+      responses:
+        '201':
+          description: Vault deposit recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  transaction:
+                    $ref: '#/components/schemas/Transaction'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/vault/withdraw:
+    post:
+      tags: [vault]
+      operationId: withdrawFromVault
+      summary: Move funds out of the vault
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount:
+                  type: string
+      responses:
+        '201':
+          description: Vault withdrawal recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  transaction:
+                    $ref: '#/components/schemas/Transaction'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ── Admin ──────────────────────────────────────────────────────────────────
+  /api/admin/users:
+    get:
+      tags: [admin]
+      operationId: adminListUsers
+      summary: List all users (admin only)
+      security:
+        - AdminToken: []
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+        - in: query
+          name: cursor
+          schema:
+            type: string
+      responses:
+        '200':
+          description: User list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        address:
+                          type: string
+                        createdAt:
+                          type: string
+                          format: date-time
+                  nextCursor:
+                    type: string
+                    nullable: true
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/admin/stats:
+    get:
+      tags: [admin]
+      operationId: adminGetStats
+      summary: Platform statistics (admin only)
+      security:
+        - AdminToken: []
+      responses:
+        '200':
+          description: Platform stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  totalUsers:
+                    type: integer
+                  totalVolumeUsdc:
+                    type: string
+                  activeVaults:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # ── Reusable responses ────────────────────────────────────────────────────
+  responses: {}
+
+components:
+  responses:
+    Unauthorized:
+      description: Missing or invalid authentication token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: Unauthorized
+    Forbidden:
+      description: Authenticated but insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: Forbidden
+    BadRequest:
+      description: Invalid request body or parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
