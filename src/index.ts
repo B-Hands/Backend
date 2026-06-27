@@ -225,6 +225,10 @@ async function gracefulShutdown(signal: string): Promise<void> {
 // ── Startup sequence ──────────────────────────────────────────────────────────
 
 async function initServices(): Promise<void> {
+  // 0. Bootstrap secrets (no-op when SECRET_BACKEND=env, fetches from SSM otherwise)
+  const { bootstrapSecrets } = await import('./config/secrets')
+  await bootstrapSecrets()
+
   if (config.nodeEnv === 'production') {
     logger.info('[Startup] Admin access will use database-backed scoped credentials ✓')
   }
