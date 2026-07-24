@@ -7,6 +7,10 @@ import { z } from 'zod'
  * attachment. `.passthrough()` keeps Twilio's other fields and — crucially — we
  * add NO defaulted keys, so the object still matches the exact params Twilio
  * signed (signature validation runs on req.body after this parse).
+ *
+ * A message must carry either text or media: `Body` alone being optional would
+ * let an empty payload through to the signature check, so the refinement below
+ * keeps rejecting content-free messages with 400.
  */
 export const whatsappWebhookSchema = z
   .object({
@@ -16,7 +20,11 @@ export const whatsappWebhookSchema = z
     MediaUrl0: z.string().url().optional(),
     MediaContentType0: z.string().optional(),
   })
-  .passthrough();
+  .passthrough()
+  .refine((data) => Boolean(data.Body?.trim()) || Boolean(data.MediaUrl0), {
+    message: 'Either Body or media (MediaUrl0) is required',
+    path: ['Body'],
+  })
 
 const WEBHOOK_EVENTS = [
   'transaction.confirmed',

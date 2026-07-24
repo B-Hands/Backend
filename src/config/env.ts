@@ -436,7 +436,7 @@ export const config = {
      * Below this the bot asks the user to repeat or type rather than guessing.
      */
     confidenceThreshold: parseFloat(
-      process.env.TRANSCRIPTION_CONFIDENCE_THRESHOLD || '0.6',
+      process.env.TRANSCRIPTION_CONFIDENCE_THRESHOLD || '0.6'
     ),
   },
   dlq: {

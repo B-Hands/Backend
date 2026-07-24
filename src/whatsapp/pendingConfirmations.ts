@@ -1,4 +1,4 @@
-import type { Intent } from '../nlp/parser';
+import type { Intent } from '../nlp/parser'
 
 /**
  * Pending voice-originated confirmations (#288).
@@ -14,24 +14,24 @@ import type { Intent } from '../nlp/parser';
  */
 
 export interface PendingConfirmation {
-  intent: Intent;
+  intent: Intent
   /** Human-readable echo shown to the user, kept for logging/debugging. */
-  summary: string;
-  expiresAt: number;
+  summary: string
+  expiresAt: number
 }
 
-const store = new Map<string, PendingConfirmation>();
+const store = new Map<string, PendingConfirmation>()
 
 /** How long a parked confirmation stays valid. */
-export const CONFIRMATION_TTL_MS = 5 * 60 * 1000; // 5 minutes
+export const CONFIRMATION_TTL_MS = 5 * 60 * 1000 // 5 minutes
 
 export function setPendingConfirmation(
   phone: string,
   intent: Intent,
   summary: string,
-  now: number = Date.now(),
+  now: number = Date.now()
 ): void {
-  store.set(phone, { intent, summary, expiresAt: now + CONFIRMATION_TTL_MS });
+  store.set(phone, { intent, summary, expiresAt: now + CONFIRMATION_TTL_MS })
 }
 
 /**
@@ -40,22 +40,22 @@ export function setPendingConfirmation(
  */
 export function getPendingConfirmation(
   phone: string,
-  now: number = Date.now(),
+  now: number = Date.now()
 ): PendingConfirmation | null {
-  const pending = store.get(phone);
-  if (!pending) return null;
+  const pending = store.get(phone)
+  if (!pending) return null
   if (now >= pending.expiresAt) {
-    store.delete(phone);
-    return null;
+    store.delete(phone)
+    return null
   }
-  return pending;
+  return pending
 }
 
 export function clearPendingConfirmation(phone: string): void {
-  store.delete(phone);
+  store.delete(phone)
 }
 
 /** Test seam. */
 export function clearAllPendingConfirmations(): void {
-  store.clear();
+  store.clear()
 }

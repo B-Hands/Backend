@@ -7,31 +7,31 @@
  * swapping STT vendors is a one-line registry change (plus config) with no edits
  * to the handler — the same pattern as the fiat provider registry.
  */
-import { config } from '../../config';
-import { TranscriptionProvider } from './types';
-import { OpenAiTranscriptionProvider } from './openaiProvider';
+import { config } from '../../config'
+import { TranscriptionProvider } from './types'
+import { OpenAiTranscriptionProvider } from './openaiProvider'
 
-const registry = new Map<string, TranscriptionProvider>();
+const registry = new Map<string, TranscriptionProvider>()
 
 function register(provider: TranscriptionProvider): void {
-  registry.set(provider.name, provider);
+  registry.set(provider.name, provider)
 }
 
 // v1 ships a single provider. Add further vendors here — nothing else changes.
-register(new OpenAiTranscriptionProvider());
+register(new OpenAiTranscriptionProvider())
 
 /** Resolve a provider by key. Throws if the key is unknown/unconfigured. */
 export function getTranscriptionProvider(name: string): TranscriptionProvider {
-  const provider = registry.get(name);
+  const provider = registry.get(name)
   if (!provider) {
-    throw new Error(`Unknown transcription provider: "${name}"`);
+    throw new Error(`Unknown transcription provider: "${name}"`)
   }
-  return provider;
+  return provider
 }
 
 /** The active provider for incoming voice notes (from config). */
 export function getDefaultTranscriptionProvider(): TranscriptionProvider {
-  return getTranscriptionProvider(config.transcription.provider);
+  return getTranscriptionProvider(config.transcription.provider)
 }
 
 /**
@@ -39,7 +39,7 @@ export function getDefaultTranscriptionProvider(): TranscriptionProvider {
  * through env configuration. Used by unit tests to inject a stub.
  */
 export function registerTranscriptionProvider(
-  provider: TranscriptionProvider,
+  provider: TranscriptionProvider
 ): void {
-  register(provider);
+  register(provider)
 }

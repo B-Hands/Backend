@@ -113,14 +113,14 @@ function isFinancialIntent(intent: Intent): boolean {
 /** Affirmative reply to a pending confirmation ("yes", "confirm", "yeah"…). */
 export function isAffirmative(message: string): boolean {
   return /^\s*(yes|yep|yeah|yup|confirm|confirmed|ok|okay|sure|correct|do it|go ahead|proceed|y)\s*[.!]*\s*$/i.test(
-    message,
+    message
   )
 }
 
 /** Negative reply to a pending confirmation ("no", "cancel", "stop"…). */
 export function isNegative(message: string): boolean {
   return /^\s*(no|nope|nah|cancel|stop|abort|don'?t|never mind|nevermind|n)\s*[.!]*\s*$/i.test(
-    message,
+    message
   )
 }
 
@@ -145,7 +145,7 @@ export function summarizeIntent(intent: Intent): string {
  */
 async function executeIntent(
   intent: Intent,
-  normalizedPhone: string,
+  normalizedPhone: string
 ): Promise<WhatsAppResponse> {
   switch (intent.action) {
     case 'balance': {
@@ -218,7 +218,7 @@ async function executeIntent(
  */
 async function resolveMessageText(
   message: string,
-  media: InboundMedia | undefined,
+  media: InboundMedia | undefined
 ): Promise<
   { text: string; fromVoice: boolean } | { reply: string; fromVoice: boolean }
 > {
@@ -243,7 +243,7 @@ async function resolveMessageText(
 
   if (result.confidence < config.transcription.confidenceThreshold) {
     logger.info(
-      `[Voice] Low-confidence transcription (${result.confidence.toFixed(2)} < ${config.transcription.confidenceThreshold}); asking user to repeat`,
+      `[Voice] Low-confidence transcription (${result.confidence.toFixed(2)} < ${config.transcription.confidenceThreshold}); asking user to repeat`
     )
     return {
       reply:
@@ -273,7 +273,7 @@ function mediaErrorReply(err: unknown): string {
 export async function handleWhatsAppMessage(
   from: string,
   message: string,
-  media?: InboundMedia,
+  media?: InboundMedia
 ): Promise<WhatsAppResponse> {
   const normalizedPhone = normalizePhone(from)
   const user = await createOrGetUser(normalizedPhone)

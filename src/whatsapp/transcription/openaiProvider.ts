@@ -1,5 +1,5 @@
-import { config } from '../../config';
-import { logger } from '../../utils/logger';
+import { config } from '../../config'
+import { logger } from '../../utils/logger'
 import {
   AudioInput,
   TranscriptionProvider,
@@ -7,7 +7,7 @@ import {
   TranscriptionUnavailableError,
   UnsupportedAudioError,
   isSupportedAudioType,
-} from './types';
+} from './types'
 
 /**
  * OpenAI Whisper transcription provider (#288).
@@ -23,17 +23,17 @@ import {
  */
 
 interface WhisperSegment {
-  avg_logprob?: number;
+  avg_logprob?: number
 }
 
 interface WhisperVerboseResponse {
-  text?: string;
-  segments?: WhisperSegment[];
+  text?: string
+  segments?: WhisperSegment[]
 }
 
 /** Map a filename extension onto the content type for the multipart part. */
 function filenameFor(contentType: string): string {
-  const base = contentType.split(';')[0]?.trim().toLowerCase();
+  const base = contentType.split(';')[0]?.trim().toLowerCase()
   const ext =
     base === 'audio/mpeg' || base === 'audio/mp3'
       ? 'mp3'
@@ -45,8 +45,8 @@ function filenameFor(contentType: string): string {
             ? 'webm'
             : base === 'audio/amr'
               ? 'amr'
-              : 'ogg';
-  return `voice-note.${ext}`;
+              : 'ogg'
+  return `voice-note.${ext}`
 }
 
 /**
@@ -57,98 +57,98 @@ function filenameFor(contentType: string): string {
 export function confidenceFromSegments(segments: WhisperSegment[]): number {
   const logprobs = segments
     .map((s) => s.avg_logprob)
-    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v))
 
   if (logprobs.length === 0) {
     // No per-segment data (e.g. very short clip). Treat as mid confidence so a
     // clear short command isn't force-rejected, but a garbled one still can be
     // caught by the parser falling through to 'unknown'.
-    return 0.7;
+    return 0.7
   }
 
-  const mean = logprobs.reduce((a, b) => a + b, 0) / logprobs.length;
-  const conf = Math.exp(mean);
-  return Math.max(0, Math.min(1, conf));
+  const mean = logprobs.reduce((a, b) => a + b, 0) / logprobs.length
+  const conf = Math.exp(mean)
+  return Math.max(0, Math.min(1, conf))
 }
 
 export class OpenAiTranscriptionProvider implements TranscriptionProvider {
-  readonly name = 'openai';
+  readonly name = 'openai'
 
   async transcribe(audio: AudioInput): Promise<TranscriptionResult> {
     if (!isSupportedAudioType(audio.contentType)) {
       throw new UnsupportedAudioError(
-        `Unsupported audio content type: ${audio.contentType}`,
-      );
+        `Unsupported audio content type: ${audio.contentType}`
+      )
     }
 
-    const apiKey = config.transcription.openaiApiKey;
+    const apiKey = config.transcription.openaiApiKey
     if (!apiKey) {
       // Missing credentials is an availability problem from the user's POV.
       throw new TranscriptionUnavailableError(
-        'Transcription provider is not configured (missing OPENAI_API_KEY)',
-      );
+        'Transcription provider is not configured (missing OPENAI_API_KEY)'
+      )
     }
 
-    const form = new FormData();
+    const form = new FormData()
     const blob = new Blob([audio.buffer], {
       type: audio.contentType.split(';')[0]?.trim() || 'audio/ogg',
-    });
-    form.append('file', blob, filenameFor(audio.contentType));
-    form.append('model', config.transcription.model);
-    form.append('response_format', 'verbose_json');
+    })
+    form.append('file', blob, filenameFor(audio.contentType))
+    form.append('model', config.transcription.model)
+    form.append('response_format', 'verbose_json')
 
-    let response: Response;
+    let response: Response
     try {
-      const controller = new AbortController();
+      const controller = new AbortController()
       const timer = setTimeout(
         () => controller.abort(),
-        config.httpClient.timeoutMs,
-      );
+        config.httpClient.timeoutMs
+      )
       try {
         response = await fetch(config.transcription.apiUrl, {
           method: 'POST',
           headers: { Authorization: `Bearer ${apiKey}` },
           body: form,
           signal: controller.signal,
-        });
+        })
       } finally {
-        clearTimeout(timer);
+        clearTimeout(timer)
       }
     } catch (err) {
       // Network error, DNS failure, timeout/abort — provider is unavailable.
       throw new TranscriptionUnavailableError(
-        `Transcription request failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+        `Transcription request failed: ${err instanceof Error ? err.message : String(err)}`
+      )
     }
 
     if (!response.ok) {
-      const detail = await response.text().catch(() => '');
+      const detail = await response.text().catch(() => '')
       // 4xx on the audio itself (e.g. unprocessable format) → unsupported;
       // everything else (5xx, 429, auth) → unavailable/outage.
       if (response.status === 400 || response.status === 415) {
         throw new UnsupportedAudioError(
-          `Provider rejected the audio (HTTP ${response.status})`,
-        );
+          `Provider rejected the audio (HTTP ${response.status})`
+        )
       }
       logger.warn(
-        `[Transcription] OpenAI returned HTTP ${response.status}: ${detail.slice(0, 200)}`,
-      );
+        `[Transcription] OpenAI returned HTTP ${response.status}: ${detail.slice(0, 200)}`
+      )
       throw new TranscriptionUnavailableError(
-        `Transcription provider error (HTTP ${response.status})`,
-      );
+        `Transcription provider error (HTTP ${response.status})`
+      )
     }
 
-    let payload: WhisperVerboseResponse;
+    let payload: WhisperVerboseResponse
     try {
-      payload = (await response.json()) as WhisperVerboseResponse;
+      payload = (await response.json()) as WhisperVerboseResponse
     } catch (err) {
       throw new TranscriptionUnavailableError(
-        `Could not parse transcription response: ${err instanceof Error ? err.message : String(err)}`,
-      );
+        `Could not parse transcription response: ${err instanceof Error ? err.message : String(err)}`
+      )
     }
 
-    const text = (payload.text ?? '').trim();
-    const confidence = confidenceFromSegments(payload.segments ?? []);
-    return { text, confidence };
+    const text = (payload.text ?? '').trim()
+    const confidence = confidenceFromSegments(payload.segments ?? [])
+    return { text, confidence }
   }
 }

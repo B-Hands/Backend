@@ -14,32 +14,32 @@
 
 export interface TranscriptionResult {
   /** The recognized text. May be empty if the audio contained no speech. */
-  text: string;
+  text: string
   /**
    * Confidence in [0, 1]. Providers that don't natively return a single score
    * should derive a reasonable proxy (e.g. from segment log-probabilities) so
    * the low-confidence gate in the handler has something to compare against.
    */
-  confidence: number;
+  confidence: number
 }
 
 export interface AudioInput {
   /** Raw audio bytes downloaded from the messaging provider. */
-  buffer: Buffer;
+  buffer: Buffer
   /** MIME type reported by the messaging provider (e.g. "audio/ogg"). */
-  contentType: string;
+  contentType: string
 }
 
 export interface TranscriptionProvider {
   /** Stable key (e.g. "openai"), used by the registry and logs. */
-  readonly name: string;
+  readonly name: string
   /**
    * Transcribe a complete audio note. Implementations should throw
    * {@link UnsupportedAudioError} for a format they cannot handle and
    * {@link TranscriptionUnavailableError} for an outage/transport failure, so
    * the handler can produce the right user-facing message for each.
    */
-  transcribe(audio: AudioInput): Promise<TranscriptionResult>;
+  transcribe(audio: AudioInput): Promise<TranscriptionResult>
 }
 
 /**
@@ -49,9 +49,9 @@ export interface TranscriptionProvider {
  */
 export class UnsupportedAudioError extends Error {
   constructor(message: string) {
-    super(message);
-    this.name = 'UnsupportedAudioError';
-    Object.setPrototypeOf(this, UnsupportedAudioError.prototype);
+    super(message)
+    this.name = 'UnsupportedAudioError'
+    Object.setPrototypeOf(this, UnsupportedAudioError.prototype)
   }
 }
 
@@ -61,9 +61,9 @@ export class UnsupportedAudioError extends Error {
  */
 export class TranscriptionUnavailableError extends Error {
   constructor(message: string) {
-    super(message);
-    this.name = 'TranscriptionUnavailableError';
-    Object.setPrototypeOf(this, TranscriptionUnavailableError.prototype);
+    super(message)
+    this.name = 'TranscriptionUnavailableError'
+    Object.setPrototypeOf(this, TranscriptionUnavailableError.prototype)
   }
 }
 
@@ -83,10 +83,10 @@ export const SUPPORTED_AUDIO_MIME_TYPES = [
   'audio/wav',
   'audio/x-wav',
   'audio/webm',
-] as const;
+] as const
 
 /** True when `contentType` (ignoring any `;codecs=` suffix) is one we accept. */
 export function isSupportedAudioType(contentType: string): boolean {
-  const base = contentType.split(';')[0]?.trim().toLowerCase();
-  return (SUPPORTED_AUDIO_MIME_TYPES as readonly string[]).includes(base ?? '');
+  const base = contentType.split(';')[0]?.trim().toLowerCase()
+  return (SUPPORTED_AUDIO_MIME_TYPES as readonly string[]).includes(base ?? '')
 }
