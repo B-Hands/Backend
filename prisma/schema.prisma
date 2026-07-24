@@ -82,6 +82,18 @@ enum ReferralStatus {
   EXPIRED
 }
 
+enum DepositCadence {
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+}
+
+enum RecurringDepositPlanStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
 model User {
   id            String   @id @default(uuid())
   walletAddress String   @unique
@@ -104,6 +116,7 @@ model User {
   fiatOrders            FiatOrder[]
   referralCode          ReferralCode?
   referralConversion    ReferralConversion?
+  recurringDepositPlans RecurringDepositPlan[]
 
   @@map("users")
 }
@@ -518,4 +531,24 @@ model ReferralConversion {
   @@index([status])
   @@index([createdAt])
   @@map("referral_conversions")
+}
+
+model RecurringDepositPlan {
+  id            String                     @id @default(uuid())
+  userId        String
+  amount        Decimal                    @db.Decimal(36, 18)
+  assetSymbol   String
+  cadence       DepositCadence
+  nextRunAt     DateTime
+  status        RecurringDepositPlanStatus @default(ACTIVE)
+  lastRunAt     DateTime?
+  lastRunStatus String?
+  createdAt     DateTime                   @default(now())
+  updatedAt     DateTime                   @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status, nextRunAt])
+  @@map("recurring_deposit_plans")
 }

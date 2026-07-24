@@ -12,6 +12,8 @@ const WEBHOOK_EVENTS = [
   'withdraw.completed',
   'fiat.order.settled',
   'fiat.order.failed',
+  'recurring_deposit.executed',
+  'recurring_deposit.failed',
 ] as const;
 
 export const createWebhookSchema = z.object({

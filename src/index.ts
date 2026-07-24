@@ -48,6 +48,7 @@ import { scheduleDataRetention } from './jobs/dataRetention'
 import { schedulePoolMetrics } from './jobs/poolMetrics'
 import { scheduleFiatReconciliation } from './jobs/fiatReconciliation'
 import { scheduleReferralPayout } from './jobs/referralPayout'
+import { scheduleRecurringDeposits } from './jobs/recurringDeposits'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { validateStellarNetworkReady } from './config/readiness'
 import healthRouter from './routes/health'
@@ -67,6 +68,7 @@ import stellarRouter from './routes/stellar'
 import webhooksRouter from './routes/webhooks'
 import fiatRouter from './routes/fiat'
 import referralsRouter from './routes/referrals'
+import recurringDepositRouter from './routes/recurring-deposits'
 import {
   corsMiddleware,
   jsonBodyParser,
@@ -96,6 +98,7 @@ let dataRetentionHandle: NodeJS.Timeout | null = null
 let poolMetricsHandle: NodeJS.Timeout | null = null
 let fiatReconciliationHandle: NodeJS.Timeout | null = null
 let referralPayoutHandle: NodeJS.Timeout | null = null
+let recurringDepositsHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
@@ -272,6 +275,7 @@ const apiRoutes: ApiRoute[] = [
   { path: 'stellar', handlers: [stellarRouter] },
   { path: 'fiat', handlers: [fiatRouter] },
   { path: 'referrals', handlers: [referralsRouter] },
+  { path: 'deposit/recurring', handlers: [recurringDepositRouter] },
   { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
 ]
 
@@ -285,6 +289,7 @@ app.use('/api/portfolio', portfolioRouter)
 app.use('/api/transactions', transactionsRouter)
 app.use('/api/protocols', protocolsRouter)
 app.use('/api/deposit', depositRouter)
+app.use('/api/deposit/recurring', recurringDepositRouter)
 app.use('/api/withdraw', withdrawRouter)
 app.use('/api/vault', vaultRouter)
 app.use('/api/analytics', analyticsRouter)
@@ -342,6 +347,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(referralPayoutHandle)
     referralPayoutHandle = null
     logger.info('[Shutdown] Referral payout timer cleared')
+  }
+
+  if (recurringDepositsHandle) {
+    clearInterval(recurringDepositsHandle)
+    recurringDepositsHandle = null
+    logger.info('[Shutdown] Recurring deposits timer cleared')
   }
 
   if (!httpServer) {
@@ -499,6 +510,7 @@ async function main(): Promise<void> {
   poolMetricsHandle = schedulePoolMetrics()
   fiatReconciliationHandle = scheduleFiatReconciliation()
   referralPayoutHandle = scheduleReferralPayout()
+  recurringDepositsHandle = scheduleRecurringDeposits()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────

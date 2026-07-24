@@ -3,10 +3,20 @@ import { HttpClientAdapter } from '../utils/http-client'
 import { config } from '../config'
 
 export interface Intent {
-  action: 'deposit' | 'withdraw' | 'balance' | 'earnings' | 'help' | 'unknown'
+  action:
+    | 'deposit'
+    | 'withdraw'
+    | 'balance'
+    | 'earnings'
+    | 'help'
+    | 'create_recurring_deposit'
+    | 'pause_recurring_deposit'
+    | 'cancel_recurring_deposit'
+    | 'unknown'
   amount?: number
   currency?: string
   all?: boolean
+  cadence?: 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY'
 }
 
 const anthropic = new Anthropic({
@@ -29,6 +39,43 @@ export function parseWithRegex(message: string): Intent | null {
   // Withdraw everything
   if (/withdraw\s+(all|everything)/i.test(lowerMsg)) {
     return { action: 'withdraw', all: true }
+  }
+
+  // Recurring deposit — cancel/pause
+  if (
+    /(?:cancel|pause|stop)\s+(?:my\s+)?(?:recurring|scheduled|automatic)\s+deposit/i.test(
+      lowerMsg
+    )
+  ) {
+    return { action: 'pause_recurring_deposit' }
+  }
+
+  // Recurring deposit — create
+  const recurringMatch = lowerMsg.match(
+    /(?:set\s+up|create|start|new)\s+(?:a\s+)?(?:recurring|scheduled|automatic)\s+deposit\s+(?:of\s+)?([\d.,]+)\s*(?:\w+)?\s+(?:every|weekly|biweekly|bi-weekly|monthly)/i
+  )
+  if (recurringMatch) {
+    const amount = parseFloat(recurringMatch[1].replace(/,/g, ''))
+    if (!isNaN(amount)) {
+      let cadence: Intent['cadence'] = 'WEEKLY'
+      if (/bi-?weekly/i.test(lowerMsg)) cadence = 'BIWEEKLY'
+      else if (/monthly/i.test(lowerMsg)) cadence = 'MONTHLY'
+      return { action: 'create_recurring_deposit', amount, cadence }
+    }
+  }
+
+  // Simpler recurring deposit pattern: "recurring deposit 50 weekly"
+  const simpleRecurring = lowerMsg.match(
+    /(?:recurring|scheduled|automatic)\s+deposit\s+([\d.,]+)\s*(weekly|bi-?weekly|monthly)/i
+  )
+  if (simpleRecurring) {
+    const amount = parseFloat(simpleRecurring[1].replace(/,/g, ''))
+    if (!isNaN(amount)) {
+      let cadence: Intent['cadence'] = 'WEEKLY'
+      if (/bi-?weekly/i.test(simpleRecurring[2])) cadence = 'BIWEEKLY'
+      else if (/monthly/i.test(simpleRecurring[2])) cadence = 'MONTHLY'
+      return { action: 'create_recurring_deposit', amount, cadence }
+    }
   }
 
   // Deposit/Withdraw with amount
@@ -72,13 +119,14 @@ export async function parseWithClaude(message: string): Promise<Intent> {
       return anthropic.messages.create({
         model: 'claude-3-haiku-20240307',
         max_tokens: 150,
-        system: `You are an intent parser for a financial bot. Determine if the user wants to deposit, withdraw, check balance, view earnings/performance, or needs help.
+        system: `You are an intent parser for a financial bot. Determine if the user wants to deposit, withdraw, check balance, view earnings/performance, set up a recurring/scheduled deposit, cancel/pause a recurring deposit, or needs help.
 Return ONLY a JSON object representing the intent, matching this TypeScript interface exactly without any wrapper text or markdown:
 {
-  "action": "deposit" | "withdraw" | "balance" | "earnings" | "help" | "unknown",
+  "action": "deposit" | "withdraw" | "balance" | "earnings" | "help" | "create_recurring_deposit" | "pause_recurring_deposit" | "unknown",
   "amount": number, // optional
   "currency": string, // optional
-  "all": boolean // for "withdraw everything"
+  "all": boolean, // for "withdraw everything"
+  "cadence": "WEEKLY" | "BIWEEKLY" | "MONTHLY" // optional, only for create_recurring_deposit
 }`,
         messages: [{ role: 'user', content: message }],
       })
@@ -94,9 +142,15 @@ Return ONLY a JSON object representing the intent, matching this TypeScript inte
       if (jsonStr) {
         const parsed = JSON.parse(jsonStr)
         if (
-          ['deposit', 'withdraw', 'balance', 'earnings', 'help'].includes(
-            parsed.action
-          )
+          [
+            'deposit',
+            'withdraw',
+            'balance',
+            'earnings',
+            'help',
+            'create_recurring_deposit',
+            'pause_recurring_deposit',
+          ].includes(parsed.action)
         ) {
           return parsed as Intent
         }

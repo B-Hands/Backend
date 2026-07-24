@@ -845,6 +845,165 @@ paths:
           description: Duplicate transaction hash
           $ref: '#/components/responses/Conflict'
 
+  # ── Recurring Deposit ─────────────────────────────────────────────────────
+  /api/v1/deposit/recurring:
+    post:
+      tags: [deposit]
+      operationId: createRecurringDeposit
+      summary: Create a recurring deposit plan
+      description: |
+        Creates a scheduled recurring deposit. Requires explicit confirmation.
+        The deposit will execute automatically on the specified cadence.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId, amount, assetSymbol, cadence, confirmed]
+              properties:
+                userId:
+                  type: string
+                  format: uuid
+                amount:
+                  type: number
+                  exclusiveMinimum: true
+                assetSymbol:
+                  type: string
+                  minLength: 1
+                cadence:
+                  type: string
+                  enum: [WEEKLY, BIWEEKLY, MONTHLY]
+                confirmed:
+                  type: boolean
+                  enum: [true]
+                  description: Must be true to confirm the recurring deposit
+            example:
+              userId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+              amount: 50
+              assetSymbol: USDC
+              cadence: WEEKLY
+              confirmed: true
+      responses:
+        '201':
+          description: Recurring deposit plan created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan:
+                    $ref: '#/components/schemas/RecurringDepositPlan'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/deposit/recurring/by-user/{userId}:
+    get:
+      tags: [deposit]
+      operationId: listRecurringDeposits
+      summary: List recurring deposit plans for a user
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of recurring deposit plans
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plans:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RecurringDepositPlan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/deposit/recurring/{id}:
+    patch:
+      tags: [deposit]
+      operationId: updateRecurringDeposit
+      summary: Update a recurring deposit plan
+      description: Pause, resume, or update the amount/cadence of a plan.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount:
+                  type: number
+                  exclusiveMinimum: true
+                cadence:
+                  type: string
+                  enum: [WEEKLY, BIWEEKLY, MONTHLY]
+                status:
+                  type: string
+                  enum: [ACTIVE, PAUSED, CANCELLED]
+      responses:
+        '200':
+          description: Plan updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan:
+                    $ref: '#/components/schemas/RecurringDepositPlan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [deposit]
+      operationId: cancelRecurringDeposit
+      summary: Cancel a recurring deposit plan
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Plan cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  plan:
+                    $ref: '#/components/schemas/RecurringDepositPlan'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   # ── Withdraw ───────────────────────────────────────────────────────────────
   /api/v1/withdraw:
     post:
@@ -2490,6 +2649,44 @@ components:
             protocolName:
               type: string
               nullable: true
+
+    # ── Recurring Deposit ──────────────────────────────────────────────────
+    RecurringDepositPlan:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        amount:
+          type: string
+          description: Decimal amount
+        assetSymbol:
+          type: string
+        cadence:
+          type: string
+          enum: [WEEKLY, BIWEEKLY, MONTHLY]
+        nextRunAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [ACTIVE, PAUSED, CANCELLED]
+        lastRunAt:
+          type: string
+          format: date-time
+          nullable: true
+        lastRunStatus:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
 
     # ── Protocol ──────────────────────────────────────────────────────────
     ProtocolRate:
