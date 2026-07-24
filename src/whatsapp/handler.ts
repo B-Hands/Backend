@@ -206,9 +206,14 @@ export async function handleWhatsAppMessage(
         return { body: 'I could not find your account. Please try again.' }
       }
       if (!intent.alertId) {
-        return { body: 'Please tell me which alert to delete, e.g. "delete alert <id>".' }
+        return {
+          body: 'Please tell me which alert to delete, e.g. "delete alert <id>".',
+        }
       }
-      const deleted = await deleteAlertRuleForWallet(walletAddress, intent.alertId)
+      const deleted = await deleteAlertRuleForWallet(
+        walletAddress,
+        intent.alertId
+      )
       return { body: formatAlertDeletedReply(deleted) }
     }
 

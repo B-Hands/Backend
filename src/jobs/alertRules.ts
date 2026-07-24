@@ -1,14 +1,14 @@
-import db from '../db';
-import { logger, logBackgroundJob } from '../utils/logger';
+import db from '../db'
+import { logger, logBackgroundJob } from '../utils/logger'
 import {
   generateCorrelationId,
   runWithCorrelationIdAsync,
-} from '../utils/correlation';
-import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics';
-import { config } from '../config/env';
-import { dispatchWebhookEvent } from '../services/webhookDispatcher';
-import { sendWhatsAppMessage } from '../utils/twilio-client';
-import { formatAlertTriggeredReply } from '../whatsapp/formatters';
+} from '../utils/correlation'
+import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
+import { config } from '../config/env'
+import { dispatchWebhookEvent } from '../services/webhookDispatcher'
+import { sendWhatsAppMessage } from '../utils/twilio-client'
+import { formatAlertTriggeredReply } from '../whatsapp/formatters'
 import {
   compare,
   cooldownCutoff,
@@ -16,7 +16,7 @@ import {
   rollingPeak,
   type AlertMetric,
   type Comparator,
-} from '../services/alertEvaluator';
+} from '../services/alertEvaluator'
 
 /**
  * Custom price & yield alert rule evaluator (#289).
@@ -56,22 +56,22 @@ import {
  *    delivery hard-fails on all channels, so the alert is retried next tick.
  */
 
-const WINDOW_DAYS = 30;
-const WINDOW_MS = WINDOW_DAYS * 24 * 60 * 60 * 1000;
+const WINDOW_DAYS = 30
+const WINDOW_MS = WINDOW_DAYS * 24 * 60 * 60 * 1000
 
 interface AlertRuleRow {
-  id: string;
-  userId: string;
-  metric: AlertMetric;
-  protocolName: string | null;
-  comparator: Comparator;
-  threshold: unknown; // Prisma Decimal
-  deliveryChannel: 'WEBHOOK' | 'WHATSAPP' | 'BOTH';
-  cooldownMinutes: number;
-  lastFiredAt: Date | null;
+  id: string
+  userId: string
+  metric: AlertMetric
+  protocolName: string | null
+  comparator: Comparator
+  threshold: unknown // Prisma Decimal
+  deliveryChannel: 'WEBHOOK' | 'WHATSAPP' | 'BOTH'
+  cooldownMinutes: number
+  lastFiredAt: Date | null
 }
 
-const ASSET_SYMBOL = 'USDC';
+const ASSET_SYMBOL = 'USDC'
 
 /**
  * Resolve the observed value for a rule's metric, or null when it cannot be
@@ -81,35 +81,35 @@ const ASSET_SYMBOL = 'USDC';
  */
 async function observeMetric(
   rule: AlertRuleRow,
-  now: Date,
+  now: Date
 ): Promise<{ value: number | null; delisted?: boolean }> {
   switch (rule.metric) {
     case 'PROTOCOL_APY': {
-      if (!rule.protocolName) return { value: null };
+      if (!rule.protocolName) return { value: null }
       const latestRate = await db.protocolRate.findFirst({
         where: { protocolName: rule.protocolName, assetSymbol: ASSET_SYMBOL },
         orderBy: { fetchedAt: 'desc' },
         select: { supplyApy: true },
-      });
+      })
       if (!latestRate) {
         // Protocol delisted/removed — no rate data to evaluate against.
-        return { value: null, delisted: true };
+        return { value: null, delisted: true }
       }
       // supplyApy is stored as a fraction (0.0842 == 8.42%); thresholds are
       // expressed in percent, so scale to percent for comparison.
-      return { value: Number(latestRate.supplyApy) * 100 };
+      return { value: Number(latestRate.supplyApy) * 100 }
     }
 
     case 'PORTFOLIO_VALUE': {
       const positions = await db.position.findMany({
         where: { userId: rule.userId, status: 'ACTIVE' },
         select: { currentValue: true },
-      });
+      })
       const total = positions.reduce(
         (sum, p) => sum + Number(p.currentValue),
-        0,
-      );
-      return { value: total };
+        0
+      )
+      return { value: total }
     }
 
     case 'POSITION_DRAWDOWN': {
@@ -119,40 +119,40 @@ async function observeMetric(
       const positions = await db.position.findMany({
         where: { userId: rule.userId, status: 'ACTIVE' },
         select: { id: true, currentValue: true },
-      });
-      if (positions.length === 0) return { value: 0 };
+      })
+      if (positions.length === 0) return { value: 0 }
 
       const currentValue = positions.reduce(
         (sum, p) => sum + Number(p.currentValue),
-        0,
-      );
+        0
+      )
 
-      const fromDate = new Date(now.getTime() - WINDOW_MS);
+      const fromDate = new Date(now.getTime() - WINDOW_MS)
       const snapshots = await db.yieldSnapshot.findMany({
         where: {
           positionId: { in: positions.map((p) => p.id) },
           snapshotAt: { gte: fromDate },
         },
         select: { principalAmount: true, yieldAmount: true, snapshotAt: true },
-      });
+      })
 
       // Aggregate snapshots into per-instant portfolio values so the peak is a
       // whole-portfolio high, not a single position's.
-      const valueByInstant = new Map<number, number>();
+      const valueByInstant = new Map<number, number>()
       for (const s of snapshots) {
-        const key = s.snapshotAt.getTime();
-        const v = Number(s.principalAmount) + Number(s.yieldAmount);
-        valueByInstant.set(key, (valueByInstant.get(key) ?? 0) + v);
+        const key = s.snapshotAt.getTime()
+        const v = Number(s.principalAmount) + Number(s.yieldAmount)
+        valueByInstant.set(key, (valueByInstant.get(key) ?? 0) + v)
       }
       const peak = rollingPeak(
         Array.from(valueByInstant.values()),
-        currentValue,
-      );
-      return { value: computeDrawdownPercent(peak, currentValue) };
+        currentValue
+      )
+      return { value: computeDrawdownPercent(peak, currentValue) }
     }
 
     default:
-      return { value: null };
+      return { value: null }
   }
 }
 
@@ -163,7 +163,7 @@ async function observeMetric(
  * mid-tick and concurrent runners.
  */
 async function claimFire(rule: AlertRuleRow, now: Date): Promise<boolean> {
-  const cutoff = cooldownCutoff(rule.cooldownMinutes, now);
+  const cutoff = cooldownCutoff(rule.cooldownMinutes, now)
   const result = await db.alertRule.updateMany({
     where: {
       id: rule.id,
@@ -171,8 +171,8 @@ async function claimFire(rule: AlertRuleRow, now: Date): Promise<boolean> {
       OR: [{ lastFiredAt: null }, { lastFiredAt: { lte: cutoff } }],
     },
     data: { lastFiredAt: now },
-  });
-  return result.count === 1;
+  })
+  return result.count === 1
 }
 
 /**
@@ -181,9 +181,9 @@ async function claimFire(rule: AlertRuleRow, now: Date): Promise<boolean> {
  */
 async function deliverAlert(
   rule: AlertRuleRow,
-  observedValue: number,
+  observedValue: number
 ): Promise<void> {
-  const threshold = Number(rule.threshold);
+  const threshold = Number(rule.threshold)
   const data = {
     ruleId: rule.id,
     userId: rule.userId,
@@ -193,27 +193,27 @@ async function deliverAlert(
     threshold,
     observedValue,
     triggeredAt: new Date().toISOString(),
-  };
+  }
 
   const wantsWebhook =
-    rule.deliveryChannel === 'WEBHOOK' || rule.deliveryChannel === 'BOTH';
+    rule.deliveryChannel === 'WEBHOOK' || rule.deliveryChannel === 'BOTH'
   const wantsWhatsApp =
-    rule.deliveryChannel === 'WHATSAPP' || rule.deliveryChannel === 'BOTH';
+    rule.deliveryChannel === 'WHATSAPP' || rule.deliveryChannel === 'BOTH'
 
   if (wantsWebhook) {
     // HMAC-signed via the existing dispatcher; no new unsigned path.
-    await dispatchWebhookEvent('alert_rule.triggered', data);
+    await dispatchWebhookEvent('alert_rule.triggered', data)
   }
 
   if (wantsWhatsApp) {
     const user = await db.user.findUnique({
       where: { id: rule.userId },
       select: { phone: true },
-    });
+    })
     if (!user?.phone) {
       logger.warn(
-        `[AlertRules] Rule ${rule.id} requests WhatsApp delivery but user ${rule.userId} has no phone on file — skipping WhatsApp channel`,
-      );
+        `[AlertRules] Rule ${rule.id} requests WhatsApp delivery but user ${rule.userId} has no phone on file — skipping WhatsApp channel`
+      )
     } else {
       const body = formatAlertTriggeredReply({
         metric: rule.metric,
@@ -221,21 +221,21 @@ async function deliverAlert(
         comparator: rule.comparator,
         threshold,
         observedValue,
-      });
-      await sendWhatsAppMessage({ to: `whatsapp:${user.phone}`, body });
+      })
+      await sendWhatsAppMessage({ to: `whatsapp:${user.phone}`, body })
     }
   }
 }
 
 export async function runAlertRules(now: Date = new Date()): Promise<void> {
-  const correlationId = generateCorrelationId();
+  const correlationId = generateCorrelationId()
   return runWithCorrelationIdAsync(correlationId, async () => {
-    const start = Date.now();
-    const jobName = 'alert_rules';
+    const start = Date.now()
+    const jobName = 'alert_rules'
 
-    let evaluated = 0;
-    let fired = 0;
-    let deactivated = 0;
+    let evaluated = 0
+    let fired = 0
+    let deactivated = 0
 
     try {
       const rules = (await db.alertRule.findMany({
@@ -251,41 +251,41 @@ export async function runAlertRules(now: Date = new Date()): Promise<void> {
           cooldownMinutes: true,
           lastFiredAt: true,
         },
-      })) as AlertRuleRow[];
+      })) as AlertRuleRow[]
 
       for (const rule of rules) {
-        evaluated++;
+        evaluated++
         try {
-          const { value, delisted } = await observeMetric(rule, now);
+          const { value, delisted } = await observeMetric(rule, now)
 
           if (delisted) {
             await db.alertRule.updateMany({
               where: { id: rule.id },
               data: { isActive: false },
-            });
-            deactivated++;
+            })
+            deactivated++
             logger.warn(
-              `[AlertRules] Deactivated rule ${rule.id}: protocol "${rule.protocolName}" has no rate data (delisted/removed)`,
-            );
-            continue;
+              `[AlertRules] Deactivated rule ${rule.id}: protocol "${rule.protocolName}" has no rate data (delisted/removed)`
+            )
+            continue
           }
 
-          if (value === null) continue;
+          if (value === null) continue
 
           const conditionMet = compare(
             rule.comparator,
             value,
-            Number(rule.threshold),
-          );
-          if (!conditionMet) continue;
+            Number(rule.threshold)
+          )
+          if (!conditionMet) continue
 
           // Atomically claim the fire (cooldown + delete/deactivate guard).
-          const won = await claimFire(rule, now);
-          if (!won) continue;
+          const won = await claimFire(rule, now)
+          if (!won) continue
 
           try {
-            await deliverAlert(rule, value);
-            fired++;
+            await deliverAlert(rule, value)
+            fired++
           } catch (deliveryError) {
             // Delivery failed after the claim advanced lastFiredAt. Roll the
             // claim back so the alert is retried on the next tick if the
@@ -296,7 +296,7 @@ export async function runAlertRules(now: Date = new Date()): Promise<void> {
                 where: { id: rule.id },
                 data: { lastFiredAt: rule.lastFiredAt },
               })
-              .catch(() => undefined);
+              .catch(() => undefined)
             logger.error(
               `[AlertRules] Delivery failed for rule ${rule.id}; fire-claim rolled back for retry`,
               {
@@ -304,8 +304,8 @@ export async function runAlertRules(now: Date = new Date()): Promise<void> {
                   deliveryError instanceof Error
                     ? deliveryError.message
                     : String(deliveryError),
-              },
-            );
+              }
+            )
           }
         } catch (ruleError) {
           // One bad rule must not abort the sweep.
@@ -314,27 +314,27 @@ export async function runAlertRules(now: Date = new Date()): Promise<void> {
               ruleError instanceof Error
                 ? ruleError.message
                 : String(ruleError),
-          });
+          })
         }
       }
 
-      const durationMs = Date.now() - start;
+      const durationMs = Date.now() - start
       logBackgroundJob(jobName, 'success', durationMs / 1000, correlationId, {
         evaluated,
         fired,
         deactivated,
-      });
-      recordJobSuccess(jobName, durationMs);
+      })
+      recordJobSuccess(jobName, durationMs)
     } catch (error) {
-      const durationMs = Date.now() - start;
+      const durationMs = Date.now() - start
       const errorMessage =
-        error instanceof Error ? error.message : 'Unknown error';
+        error instanceof Error ? error.message : 'Unknown error'
       logBackgroundJob(jobName, 'failed', durationMs / 1000, correlationId, {
         error: errorMessage,
-      });
-      recordJobFailure(jobName, durationMs);
+      })
+      recordJobFailure(jobName, durationMs)
     }
-  });
+  })
 }
 
 /**
@@ -344,17 +344,17 @@ export async function runAlertRules(now: Date = new Date()): Promise<void> {
  * @returns NodeJS.Timeout handle — pass to clearInterval() on shutdown.
  */
 export function scheduleAlertRules(): NodeJS.Timeout {
-  void runAlertRules();
+  void runAlertRules()
 
-  const intervalMs = config.alertRules.intervalMs;
+  const intervalMs = config.alertRules.intervalMs
   const handle = setInterval(() => {
-    void runAlertRules();
-  }, intervalMs);
+    void runAlertRules()
+  }, intervalMs)
 
-  handle.unref?.();
+  handle.unref?.()
 
   logger.info(
-    `[AlertRules] Alert-rule evaluation scheduled every ${intervalMs}ms`,
-  );
-  return handle;
+    `[AlertRules] Alert-rule evaluation scheduled every ${intervalMs}ms`
+  )
+  return handle
 }

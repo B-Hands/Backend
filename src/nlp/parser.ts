@@ -61,7 +61,11 @@ const anthropicHttpClient = new HttpClientAdapter({
  */
 export function parseAlertIntent(lowerMsg: string): Intent | null {
   // List: "my alerts", "list alerts", "show my alert rules"
-  if (/\b(list|show|view|my)\b.*\balerts?\b|\balerts?\b.*\b(list|status)\b/i.test(lowerMsg)) {
+  if (
+    /\b(list|show|view|my)\b.*\balerts?\b|\balerts?\b.*\b(list|status)\b/i.test(
+      lowerMsg
+    )
+  ) {
     return { action: 'alert_list' }
   }
 
@@ -102,9 +106,13 @@ export function parseAlertIntent(lowerMsg: string): Intent | null {
   }
 
   // Comparator
-  if (/\b(below|under|less than|drops? below|falls? below|<)\b/i.test(lowerMsg)) {
+  if (
+    /\b(below|under|less than|drops? below|falls? below|<)\b/i.test(lowerMsg)
+  ) {
     intent.comparator = 'LT'
-  } else if (/\b(above|over|greater than|exceeds?|rises? above|>)\b/i.test(lowerMsg)) {
+  } else if (
+    /\b(above|over|greater than|exceeds?|rises? above|>)\b/i.test(lowerMsg)
+  ) {
     intent.comparator = 'GT'
   }
 

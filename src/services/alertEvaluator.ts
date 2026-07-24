@@ -9,10 +9,8 @@
  */
 
 export type AlertMetric =
-  | 'PROTOCOL_APY'
-  | 'PORTFOLIO_VALUE'
-  | 'POSITION_DRAWDOWN';
-export type Comparator = 'LT' | 'LTE' | 'GT' | 'GTE';
+  'PROTOCOL_APY' | 'PORTFOLIO_VALUE' | 'POSITION_DRAWDOWN'
+export type Comparator = 'LT' | 'LTE' | 'GT' | 'GTE'
 
 /**
  * Evaluate a comparator against an observed value and threshold.
@@ -21,19 +19,19 @@ export type Comparator = 'LT' | 'LTE' | 'GT' | 'GTE';
 export function compare(
   comparator: Comparator,
   observed: number,
-  threshold: number,
+  threshold: number
 ): boolean {
   switch (comparator) {
     case 'LT':
-      return observed < threshold;
+      return observed < threshold
     case 'LTE':
-      return observed <= threshold;
+      return observed <= threshold
     case 'GT':
-      return observed > threshold;
+      return observed > threshold
     case 'GTE':
-      return observed >= threshold;
+      return observed >= threshold
     default:
-      return false;
+      return false
   }
 }
 
@@ -48,11 +46,11 @@ export function compare(
 export function isCooldownActive(
   lastFiredAt: Date | null | undefined,
   cooldownMinutes: number,
-  now: Date,
+  now: Date
 ): boolean {
-  if (!lastFiredAt) return false;
-  const elapsedMs = now.getTime() - lastFiredAt.getTime();
-  return elapsedMs < cooldownMinutes * 60_000;
+  if (!lastFiredAt) return false
+  const elapsedMs = now.getTime() - lastFiredAt.getTime()
+  return elapsedMs < cooldownMinutes * 60_000
 }
 
 /**
@@ -61,7 +59,7 @@ export function isCooldownActive(
  * atomic fire-claim query in the job.
  */
 export function cooldownCutoff(cooldownMinutes: number, now: Date): Date {
-  return new Date(now.getTime() - cooldownMinutes * 60_000);
+  return new Date(now.getTime() - cooldownMinutes * 60_000)
 }
 
 /**
@@ -75,11 +73,11 @@ export function cooldownCutoff(cooldownMinutes: number, now: Date): Date {
  */
 export function computeDrawdownPercent(
   peakValue: number,
-  currentValue: number,
+  currentValue: number
 ): number {
-  if (peakValue <= 0) return 0;
-  const drawdown = ((peakValue - currentValue) / peakValue) * 100;
-  return drawdown > 0 ? drawdown : 0;
+  if (peakValue <= 0) return 0
+  const drawdown = ((peakValue - currentValue) / peakValue) * 100
+  return drawdown > 0 ? drawdown : 0
 }
 
 /**
@@ -89,24 +87,24 @@ export function computeDrawdownPercent(
  */
 export function rollingPeak(
   historicalValues: number[],
-  currentValue: number,
+  currentValue: number
 ): number {
-  return Math.max(currentValue, ...historicalValues, 0);
+  return Math.max(currentValue, ...historicalValues, 0)
 }
 
 export interface EvaluatableRule {
-  metric: AlertMetric;
-  comparator: Comparator;
-  threshold: number;
-  cooldownMinutes: number;
-  lastFiredAt: Date | null;
+  metric: AlertMetric
+  comparator: Comparator
+  threshold: number
+  cooldownMinutes: number
+  lastFiredAt: Date | null
 }
 
 export interface EvaluationResult {
   /** The comparator condition holds for the observed value. */
-  conditionMet: boolean;
+  conditionMet: boolean
   /** The rule is eligible to fire now (condition met AND cooldown elapsed). */
-  shouldFire: boolean;
+  shouldFire: boolean
 }
 
 /**
@@ -116,11 +114,11 @@ export interface EvaluationResult {
 export function evaluateRule(
   rule: EvaluatableRule,
   observedValue: number,
-  now: Date,
+  now: Date
 ): EvaluationResult {
-  const conditionMet = compare(rule.comparator, observedValue, rule.threshold);
+  const conditionMet = compare(rule.comparator, observedValue, rule.threshold)
   const shouldFire =
     conditionMet &&
-    !isCooldownActive(rule.lastFiredAt, rule.cooldownMinutes, now);
-  return { conditionMet, shouldFire };
+    !isCooldownActive(rule.lastFiredAt, rule.cooldownMinutes, now)
+  return { conditionMet, shouldFire }
 }

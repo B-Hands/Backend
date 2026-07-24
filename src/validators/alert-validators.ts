@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod'
 
 /**
  * Validators for user-defined alert rules (#289).
@@ -12,15 +12,15 @@ export const ALERT_METRICS = [
   'PROTOCOL_APY',
   'PORTFOLIO_VALUE',
   'POSITION_DRAWDOWN',
-] as const;
+] as const
 
-export const COMPARATORS = ['LT', 'LTE', 'GT', 'GTE'] as const;
+export const COMPARATORS = ['LT', 'LTE', 'GT', 'GTE'] as const
 
-export const DELIVERY_CHANNELS = ['WEBHOOK', 'WHATSAPP', 'BOTH'] as const;
+export const DELIVERY_CHANNELS = ['WEBHOOK', 'WHATSAPP', 'BOTH'] as const
 
-export type AlertMetric = (typeof ALERT_METRICS)[number];
-export type Comparator = (typeof COMPARATORS)[number];
-export type DeliveryChannel = (typeof DELIVERY_CHANNELS)[number];
+export type AlertMetric = (typeof ALERT_METRICS)[number]
+export type Comparator = (typeof COMPARATORS)[number]
+export type DeliveryChannel = (typeof DELIVERY_CHANNELS)[number]
 
 const baseAlertRuleShape = {
   metric: z.enum(ALERT_METRICS),
@@ -29,7 +29,7 @@ const baseAlertRuleShape = {
   threshold: z.number().finite(),
   deliveryChannel: z.enum(DELIVERY_CHANNELS),
   cooldownMinutes: z.number().int().min(1).max(10080).default(60),
-};
+}
 
 /**
  * PROTOCOL_APY rules must name a protocol; the other metrics must not
@@ -44,20 +44,20 @@ function requireProtocolNameForApy<
       code: z.ZodIssueCode.custom,
       path: ['protocolName'],
       message: 'protocolName is required when metric is PROTOCOL_APY',
-    });
+    })
   }
   if (data.metric && data.metric !== 'PROTOCOL_APY' && data.protocolName) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['protocolName'],
       message: 'protocolName is only valid when metric is PROTOCOL_APY',
-    });
+    })
   }
 }
 
 export const createAlertRuleSchema = z
   .object(baseAlertRuleShape)
-  .superRefine(requireProtocolNameForApy);
+  .superRefine(requireProtocolNameForApy)
 
 /**
  * PATCH allows partial updates. When metric is being changed we still enforce
@@ -76,12 +76,12 @@ export const updateAlertRuleSchema = z
   })
   .refine((data) => Object.keys(data).length > 0, {
     message: 'At least one field must be provided',
-  });
+  })
 
 export const alertIdParamSchema = z.object({
   id: z.string().uuid('Invalid alert rule ID'),
-});
+})
 
 export const alertUserParamSchema = z.object({
   userId: z.string().uuid('Invalid user ID format'),
-});
+})

@@ -228,8 +228,7 @@ export function formatAlertTriggeredReply(input: {
       ? `${metricLabel} (${input.protocolName})`
       : metricLabel
 
-  const fmt = (n: number): string =>
-    `${prefix}${n.toFixed(2)}${unit}`
+  const fmt = (n: number): string => `${prefix}${n.toFixed(2)}${unit}`
 
   return [
     '🔔 *Alert triggered*',
@@ -283,7 +282,7 @@ export function formatAlertListReply(
     comparator: string
     threshold: number
     isActive: boolean
-  }>,
+  }>
 ): string {
   if (rules.length === 0) {
     return '🔕 You have no alert rules yet. Try "alert me when Blend apy < 5".'

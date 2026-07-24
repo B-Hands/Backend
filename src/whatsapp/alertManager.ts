@@ -68,8 +68,7 @@ async function resolveUserId(walletAddress: string): Promise<string | null> {
 }
 
 export type CreateAlertResult =
-  | { ok: true; rule: AlertRuleView }
-  | { ok: false; error: string }
+  { ok: true; rule: AlertRuleView } | { ok: false; error: string }
 
 /**
  * Create an alert rule for the user owning `walletAddress`. Validates the
@@ -84,11 +83,14 @@ export async function createAlertRuleForWallet(
     comparator?: string
     threshold?: number
     deliveryChannel: DeliveryChannel
-  },
+  }
 ): Promise<CreateAlertResult> {
   const userId = await resolveUserId(walletAddress)
   if (!userId) {
-    return { ok: false, error: 'I could not find your account. Please try again.' }
+    return {
+      ok: false,
+      error: 'I could not find your account. Please try again.',
+    }
   }
 
   const parsed = createAlertRuleSchema.safeParse({
@@ -126,7 +128,7 @@ export async function createAlertRuleForWallet(
 
 /** List the alert rules owned by the user behind `walletAddress`. */
 export async function listAlertRulesForWallet(
-  walletAddress: string,
+  walletAddress: string
 ): Promise<AlertRuleView[]> {
   const userId = await resolveUserId(walletAddress)
   if (!userId) return []
@@ -146,7 +148,7 @@ export async function listAlertRulesForWallet(
  */
 export async function deleteAlertRuleForWallet(
   walletAddress: string,
-  alertId: string,
+  alertId: string
 ): Promise<boolean> {
   const userId = await resolveUserId(walletAddress)
   if (!userId) return false
