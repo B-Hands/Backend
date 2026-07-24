@@ -420,6 +420,25 @@ export const config = {
     twilioToken: process.env.TWILIO_AUTH_TOKEN || '',
     fromNumber: process.env.WHATSAPP_FROM || '',
   },
+  // Speech-to-text for WhatsApp voice notes (#288). The provider is swappable
+  // behind the TranscriptionProvider interface; these settings configure the
+  // default (OpenAI Whisper) implementation. Raw audio is never persisted —
+  // see docs/WHATSAPP_VOICE.md.
+  transcription: {
+    provider: process.env.TRANSCRIPTION_PROVIDER || 'openai',
+    openaiApiKey: process.env.OPENAI_API_KEY || '',
+    model: process.env.TRANSCRIPTION_MODEL || 'whisper-1',
+    apiUrl:
+      process.env.TRANSCRIPTION_API_URL ||
+      'https://api.openai.com/v1/audio/transcriptions',
+    /**
+     * Minimum transcription confidence (0–1) required to act on a voice note.
+     * Below this the bot asks the user to repeat or type rather than guessing.
+     */
+    confidenceThreshold: parseFloat(
+      process.env.TRANSCRIPTION_CONFIDENCE_THRESHOLD || '0.6'
+    ),
+  },
   dlq: {
     alertThreshold: parseInt(process.env.DLQ_ALERT_THRESHOLD || '50'),
     alertCooldownMs: parseInt(process.env.DLQ_ALERT_COOLDOWN_MS || '900000'), // 15 minutes default
@@ -457,6 +476,10 @@ export const config = {
   protocolRisk: {
     /** Interval between protocol risk-score recomputations in ms (default: 6 hours) */
     intervalMs: parseInt(process.env.PROTOCOL_RISK_INTERVAL_MS || '21600000'),
+  },
+  alertRules: {
+    /** Interval between user alert-rule evaluation sweeps in ms (default: 1 minute). */
+    intervalMs: parseInt(process.env.ALERT_RULES_INTERVAL_MS || '60000'),
   },
   referral: {
     /**

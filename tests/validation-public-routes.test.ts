@@ -70,12 +70,24 @@ describe('Zod validation on public routes', () => {
       expect(res.body.error).toBeDefined()
     })
 
-    it('returns 400 when Body is missing', async () => {
+    it('returns 400 when Body is missing and there is no media', async () => {
       const res = await request(app)
         .post('/api/v1/whatsapp/webhook')
         .send({ From: '+1234567890' })
       expect(res.status).toBe(400)
       expect(res.body.error).toBeDefined()
+    })
+
+    // A voice note (#288) has no Body, so it must clear validation and reach
+    // the Twilio signature check — 403 here means it passed the schema.
+    it('passes validation for a voice note with media and no Body', async () => {
+      const res = await request(app).post('/api/v1/whatsapp/webhook').send({
+        From: '+1234567890',
+        NumMedia: '1',
+        MediaUrl0: 'https://api.twilio.com/media/ME123',
+        MediaContentType0: 'audio/ogg',
+      })
+      expect(res.status).toBe(403)
     })
   })
 })

@@ -49,6 +49,7 @@ import { schedulePoolMetrics } from './jobs/poolMetrics'
 import { scheduleFiatReconciliation } from './jobs/fiatReconciliation'
 import { scheduleReferralPayout } from './jobs/referralPayout'
 import { scheduleRecurringDeposits } from './jobs/recurringDeposits'
+import { scheduleAlertRules } from './jobs/alertRules'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { validateStellarNetworkReady } from './config/readiness'
 import healthRouter from './routes/health'
@@ -69,6 +70,7 @@ import webhooksRouter from './routes/webhooks'
 import fiatRouter from './routes/fiat'
 import referralsRouter from './routes/referrals'
 import recurringDepositRouter from './routes/recurring-deposits'
+import alertsRouter from './routes/alerts'
 import {
   corsMiddleware,
   jsonBodyParser,
@@ -99,6 +101,7 @@ let poolMetricsHandle: NodeJS.Timeout | null = null
 let fiatReconciliationHandle: NodeJS.Timeout | null = null
 let referralPayoutHandle: NodeJS.Timeout | null = null
 let recurringDepositsHandle: NodeJS.Timeout | null = null
+let alertRulesHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
@@ -155,6 +158,14 @@ app.use(trustedIpBypass)
 app.use(rateLimiter)
 app.use(requestTimeoutMiddleware)
 
+// Advertise the served API version on every response — must be registered
+// before the first route (including the health probes below).
+const API_VERSION = '1'
+app.use((_req: Request, res: Response, next) => {
+  res.setHeader('X-API-Version', API_VERSION)
+  next()
+})
+
 // ── Readiness / liveness probes ───────────────────────────────────────────────
 
 app.get('/health/live', (_req, res) => {
@@ -192,18 +203,10 @@ app.get('/health/ready', (_req, res) => {
 // existing clients keep working; they emit RFC 8594 Deprecation/Sunset headers
 // announcing the removal date. See docs/api-versioning.md for the policy.
 
-const API_VERSION = '1'
-
 // Unversioned routes are supported for at least 6 months from this release.
 const UNVERSIONED_SUNSET = new Date(
   Date.now() + 182 * 24 * 60 * 60 * 1000
 ).toUTCString()
-
-// Advertise the served API version on every response.
-app.use((_req: Request, res: Response, next) => {
-  res.setHeader('X-API-Version', API_VERSION)
-  next()
-})
 
 // ── OpenAPI / Swagger UI ──────────────────────────────────────────────────────
 
@@ -276,22 +279,13 @@ const apiRoutes: ApiRoute[] = [
   { path: 'fiat', handlers: [fiatRouter] },
   { path: 'referrals', handlers: [referralsRouter] },
   { path: 'deposit/recurring', handlers: [recurringDepositRouter] },
+  { path: 'alerts', handlers: [alertsRouter] },
   { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
 ]
 
 // ── Application routes ────────────────────────────────────────────────────────
 
 app.use('/health', healthRouter)
-app.use('/api/agent', internalRateLimiter, agentRouter)
-app.use('/api/auth', authRateLimiter, authRouter)
-app.use('/api/whatsapp', webhookRateLimiter, whatsappRouter)
-app.use('/api/portfolio', portfolioRouter)
-app.use('/api/transactions', transactionsRouter)
-app.use('/api/protocols', protocolsRouter)
-app.use('/api/deposit', depositRouter)
-app.use('/api/deposit/recurring', recurringDepositRouter)
-app.use('/api/withdraw', withdrawRouter)
-app.use('/api/vault', vaultRouter)
 app.use('/api/analytics', analyticsRouter)
 app.use('/api/stellar', stellarRouter)
 app.use('/api/webhooks', webhooksRouter)
@@ -353,6 +347,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(recurringDepositsHandle)
     recurringDepositsHandle = null
     logger.info('[Shutdown] Recurring deposits timer cleared')
+  }
+
+  if (alertRulesHandle) {
+    clearInterval(alertRulesHandle)
+    alertRulesHandle = null
+    logger.info('[Shutdown] Alert rules timer cleared')
   }
 
   if (!httpServer) {
@@ -511,6 +511,7 @@ async function main(): Promise<void> {
   fiatReconciliationHandle = scheduleFiatReconciliation()
   referralPayoutHandle = scheduleReferralPayout()
   recurringDepositsHandle = scheduleRecurringDeposits()
+  alertRulesHandle = scheduleAlertRules()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────
