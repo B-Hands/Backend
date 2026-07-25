@@ -192,6 +192,32 @@ export function formatWithdrawReply(input: {
   ].join('\n')
 }
 
+export function formatRecurringDepositExecuted(input: {
+  amount: number
+  assetSymbol: string
+  cadence: string
+}): string {
+  return [
+    '✅ *Recurring deposit executed*',
+    `Amount: *${input.amount} ${input.assetSymbol}*`,
+    `Schedule: *${input.cadence}*`,
+    '_Your automatic deposit has been processed._',
+  ].join('\n')
+}
+
+export function formatRecurringDepositFailed(input: {
+  amount: number
+  assetSymbol: string
+  reason: string
+}): string {
+  return [
+    '❌ *Recurring deposit failed*',
+    `Amount: *${input.amount} ${input.assetSymbol}*`,
+    `Reason: _${input.reason}_`,
+    '_Please check your wallet balance and try again later._',
+  ].join('\n')
+}
+
 const ALERT_METRIC_LABELS: Record<string, string> = {
   PROTOCOL_APY: 'Protocol APY',
   PORTFOLIO_VALUE: 'Portfolio value',

@@ -11,6 +11,7 @@ import {
   getGoalStatus,
   decrementBalance,
 } from './userManager'
+import db from '../db'
 import {
   createAlertRuleForWallet,
   listAlertRulesForWallet,
@@ -55,6 +56,8 @@ function formatHelpMessage(): string {
     '- "deposit <amount>" → get deposit instructions',
     '- "withdraw <amount>" → withdraw funds (if available)',
     '- "earnings" → see your performance',
+    '- "set up recurring deposit 50 weekly" → start automatic deposits',
+    '- "pause recurring deposit" → pause your scheduled deposits',
     '- "alert me when Blend apy < 5" → create a price/yield alert',
     '- "list my alerts" → see your alert rules',
     '- "delete alert <id>" → remove an alert rule',
@@ -211,6 +214,89 @@ async function executeIntent(
         }
       }
       return { body: formatEarnings(summary) }
+    }
+
+    case 'create_recurring_deposit': {
+      const amount = intent.amount
+      const cadence = intent.cadence
+      if (!amount || amount <= 0) {
+        return {
+          body: 'Please specify an amount, e.g. "recurring deposit 50 weekly".',
+        }
+      }
+      if (!cadence) {
+        return {
+          body: 'Please specify a schedule: weekly, biweekly, or monthly.',
+        }
+      }
+      const wallet = getUserWalletAddress(normalizedPhone)
+      if (!wallet) {
+        return { body: 'Your account is not fully set up yet.' }
+      }
+      const user = await db.user.findFirst({
+        where: { walletAddress: wallet },
+        select: { id: true },
+      })
+      if (!user) {
+        return { body: 'Your account is not fully set up yet.' }
+      }
+      const nextRunAt = new Date()
+      switch (cadence) {
+        case 'WEEKLY':
+          nextRunAt.setDate(nextRunAt.getDate() + 7)
+          break
+        case 'BIWEEKLY':
+          nextRunAt.setDate(nextRunAt.getDate() + 14)
+          break
+        case 'MONTHLY':
+          nextRunAt.setMonth(nextRunAt.getMonth() + 1)
+          break
+      }
+      const plan = await db.recurringDepositPlan.create({
+        data: {
+          userId: user.id,
+          amount,
+          assetSymbol: 'USDC',
+          cadence,
+          nextRunAt,
+        },
+      })
+      return {
+        body: [
+          '✅ *Recurring deposit created*',
+          `Amount: *${amount} USDC*`,
+          `Schedule: *${cadence}*`,
+          `First run: _${nextRunAt.toLocaleDateString()}_`,
+          '_Your deposits will run automatically on schedule._',
+        ].join('\n'),
+      }
+    }
+
+    case 'pause_recurring_deposit': {
+      const wallet = getUserWalletAddress(normalizedPhone)
+      if (!wallet) {
+        return { body: 'Your account is not fully set up yet.' }
+      }
+      const user = await db.user.findFirst({
+        where: { walletAddress: wallet },
+        select: { id: true },
+      })
+      if (!user) {
+        return { body: 'Your account is not fully set up yet.' }
+      }
+      const activePlans = await db.recurringDepositPlan.findMany({
+        where: { userId: user.id, status: 'ACTIVE' },
+      })
+      if (activePlans.length === 0) {
+        return { body: 'You have no active recurring deposits to pause.' }
+      }
+      await db.recurringDepositPlan.updateMany({
+        where: { userId: user.id, status: 'ACTIVE' },
+        data: { status: 'PAUSED' },
+      })
+      return {
+        body: `✅ *${activePlans.length} recurring deposit(s) paused*\nYou can resume them anytime with "resume recurring deposit".`,
+      }
     }
 
     case 'alert_create': {

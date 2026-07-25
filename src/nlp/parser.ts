@@ -8,8 +8,11 @@ export interface Intent {
     | 'withdraw'
     | 'balance'
     | 'earnings'
-    | 'goal'
     | 'help'
+    | 'create_recurring_deposit'
+    | 'pause_recurring_deposit'
+    | 'cancel_recurring_deposit'
+    | 'goal'
     | 'alert_create'
     | 'alert_list'
     | 'alert_delete'
@@ -17,6 +20,7 @@ export interface Intent {
   amount?: number
   currency?: string
   all?: boolean
+  cadence?: 'WEEKLY' | 'BIWEEKLY' | 'MONTHLY'
   // Alert-rule fields (action = alert_*). Kept optional so the union stays flat.
   metric?: 'PROTOCOL_APY' | 'PORTFOLIO_VALUE' | 'POSITION_DRAWDOWN'
   protocolName?: string
@@ -35,6 +39,8 @@ const KNOWN_ACTIONS = [
   'balance',
   'earnings',
   'help',
+  'create_recurring_deposit',
+  'pause_recurring_deposit',
   'alert_create',
   'alert_list',
   'alert_delete',
@@ -135,6 +141,43 @@ export function parseWithRegex(message: string): Intent | null {
     return { action: 'withdraw', all: true }
   }
 
+  // Recurring deposit — cancel/pause
+  if (
+    /(?:cancel|pause|stop)\s+(?:my\s+)?(?:recurring|scheduled|automatic)\s+deposit/i.test(
+      lowerMsg
+    )
+  ) {
+    return { action: 'pause_recurring_deposit' }
+  }
+
+  // Recurring deposit — create
+  const recurringMatch = lowerMsg.match(
+    /(?:set\s+up|create|start|new)\s+(?:a\s+)?(?:recurring|scheduled|automatic)\s+deposit\s+(?:of\s+)?([\d.,]+)\s*(?:\w+)?\s+(?:every|weekly|biweekly|bi-weekly|monthly)/i
+  )
+  if (recurringMatch) {
+    const amount = parseFloat(recurringMatch[1].replace(/,/g, ''))
+    if (!isNaN(amount)) {
+      let cadence: Intent['cadence'] = 'WEEKLY'
+      if (/bi-?weekly/i.test(lowerMsg)) cadence = 'BIWEEKLY'
+      else if (/monthly/i.test(lowerMsg)) cadence = 'MONTHLY'
+      return { action: 'create_recurring_deposit', amount, cadence }
+    }
+  }
+
+  // Simpler recurring deposit pattern: "recurring deposit 50 weekly"
+  const simpleRecurring = lowerMsg.match(
+    /(?:recurring|scheduled|automatic)\s+deposit\s+([\d.,]+)\s*(weekly|bi-?weekly|monthly)/i
+  )
+  if (simpleRecurring) {
+    const amount = parseFloat(simpleRecurring[1].replace(/,/g, ''))
+    if (!isNaN(amount)) {
+      let cadence: Intent['cadence'] = 'WEEKLY'
+      if (/bi-?weekly/i.test(simpleRecurring[2])) cadence = 'BIWEEKLY'
+      else if (/monthly/i.test(simpleRecurring[2])) cadence = 'MONTHLY'
+      return { action: 'create_recurring_deposit', amount, cadence }
+    }
+  }
+
   // Deposit/Withdraw with amount
   const actionMatch = lowerMsg.match(
     /(deposit|withdraw)\s+([\d.,]+)(?:\s+([a-z]+))?/i
@@ -188,21 +231,21 @@ export async function parseWithClaude(message: string): Promise<Intent> {
       return anthropic.messages.create({
         model: 'claude-3-haiku-20240307',
         max_tokens: 150,
-        system: `You are an intent parser for a financial bot. Determine if the user wants to deposit, withdraw, check balance, view earnings/performance, check their savings goal progress, or needs help.
+        system: `You are an intent parser for a financial bot. Determine if the user wants to deposit, withdraw, check balance, view earnings/performance, set up a recurring/scheduled deposit, cancel/pause a recurring deposit, check their savings goal progress, or needs help.
 Return ONLY a JSON object representing the intent, matching this TypeScript interface exactly without any wrapper text or markdown:
 {
-  "action": "deposit" | "withdraw" | "balance" | "earnings" | "goal" | "help" | "unknown",
+  "action": "deposit" | "withdraw" | "balance" | "earnings" | "help" | "create_recurring_deposit" | "pause_recurring_deposit" | "goal" | "unknown",
   "amount": number, // optional
   "currency": string, // optional
   "all": boolean, // for "withdraw everything"
+  "cadence": "WEEKLY" | "BIWEEKLY" | "MONTHLY", // optional, only for create_recurring_deposit
   // Alert fields (only for alert_* actions):
   "metric": "PROTOCOL_APY" | "PORTFOLIO_VALUE" | "POSITION_DRAWDOWN", // what to watch
   "protocolName": string, // required when metric = PROTOCOL_APY, e.g. "Blend"
   "comparator": "LT" | "LTE" | "GT" | "GTE", // below=LT, above=GT
   "threshold": number, // the trigger value (APY as a percent, e.g. 5 for 5%)
   "alertId": string // for alert_delete, if the user named a specific rule id
-}
-Examples: "alert me if Blend APY drops below 5" -> {"action":"alert_create","metric":"PROTOCOL_APY","protocolName":"Blend","comparator":"LT","threshold":5}. "show my alerts" -> {"action":"alert_list"}. "delete alert abc-123" -> {"action":"alert_delete","alertId":"abc-123"}.`,
+}`,
         messages: [{ role: 'user', content: message }],
       })
     }, 'anthropic.parseIntent')
@@ -222,8 +265,10 @@ Examples: "alert me if Blend APY drops below 5" -> {"action":"alert_create","met
             'withdraw',
             'balance',
             'earnings',
-            'goal',
             'help',
+            'create_recurring_deposit',
+            'pause_recurring_deposit',
+            'goal',
           ].includes(parsed.action)
         ) {
           return parsed as Intent

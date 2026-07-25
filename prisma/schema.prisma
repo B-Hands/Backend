@@ -87,6 +87,18 @@ enum ReferralStatus {
   EXPIRED
 }
 
+enum DepositCadence {
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+}
+
+enum RecurringDepositPlanStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
 // Where an acquisition/disposal USD price came from (#284). Only stablecoins
 // are priced in v1; anything else is stored with a null price and surfaced as
 // unpriced in the tax report — never silently zeroed.
@@ -150,6 +162,7 @@ model User {
   fiatOrders            FiatOrder[]
   referralCode          ReferralCode?
   referralConversion    ReferralConversion?
+  recurringDepositPlans RecurringDepositPlan[]
   alertRules            AlertRule[]
   costBasisLots         CostBasisLot[]
   lotDisposals          LotDisposal[]
@@ -608,6 +621,26 @@ model ReferralConversion {
   @@index([status])
   @@index([createdAt])
   @@map("referral_conversions")
+}
+
+model RecurringDepositPlan {
+  id            String                     @id @default(uuid())
+  userId        String
+  amount        Decimal                    @db.Decimal(36, 18)
+  assetSymbol   String
+  cadence       DepositCadence
+  nextRunAt     DateTime
+  status        RecurringDepositPlanStatus @default(ACTIVE)
+  lastRunAt     DateTime?
+  lastRunStatus String?
+  createdAt     DateTime                   @default(now())
+  updatedAt     DateTime                   @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status, nextRunAt])
+  @@map("recurring_deposit_plans")
 }
 
 /// Cost-basis lot for tax reporting (#284). Exactly one lot per confirmed
