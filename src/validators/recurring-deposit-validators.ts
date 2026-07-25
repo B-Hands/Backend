@@ -8,12 +8,10 @@ export const createRecurringDepositSchema = z.object({
   amount: z.number().positive(),
   assetSymbol: z.string().min(1),
   cadence: depositCadenceEnum,
-  confirmed: z
-    .literal(true)
-    .refine((val) => val === true, {
-      message:
-        'You must confirm this recurring deposit. Set confirmed: true after reviewing the schedule.',
-    }),
+  confirmed: z.literal(true).refine((val) => val === true, {
+    message:
+      'You must confirm this recurring deposit. Set confirmed: true after reviewing the schedule.',
+  }),
 })
 
 export const updateRecurringDepositSchema = z.object({

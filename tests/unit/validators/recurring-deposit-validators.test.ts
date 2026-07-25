@@ -113,7 +113,9 @@ describe('recurring-deposit-validators', () => {
     })
 
     it('accepts valid status update', () => {
-      const result = updateRecurringDepositSchema.safeParse({ status: 'PAUSED' })
+      const result = updateRecurringDepositSchema.safeParse({
+        status: 'PAUSED',
+      })
       expect(result.success).toBe(true)
     })
 

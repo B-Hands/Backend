@@ -23,7 +23,10 @@ function computeNextRunAt(
 router.post(
   '/',
   requireAuth,
-  validate({ body: createRecurringDepositSchema, errorMessage: 'Validation error' }),
+  validate({
+    body: createRecurringDepositSchema,
+    errorMessage: 'Validation error',
+  }),
   enforceUserAccess,
   async (req: Request, res: Response) => {
     try {
@@ -79,7 +82,10 @@ router.get(
 router.patch(
   '/:id',
   requireAuth,
-  validate({ body: updateRecurringDepositSchema, errorMessage: 'Validation error' }),
+  validate({
+    body: updateRecurringDepositSchema,
+    errorMessage: 'Validation error',
+  }),
   async (req: Request, res: Response) => {
     const { id } = req.params
 
@@ -117,30 +123,26 @@ router.patch(
 )
 
 // ── Cancel a plan ──────────────────────────────────────────────────────────
-router.delete(
-  '/:id',
-  requireAuth,
-  async (req: Request, res: Response) => {
-    const { id } = req.params
+router.delete('/:id', requireAuth, async (req: Request, res: Response) => {
+  const { id } = req.params
 
-    const plan = await db.recurringDepositPlan.findUnique({ where: { id } })
-    if (!plan) {
-      return sendNotFound(res, 'Recurring deposit plan')
-    }
-
-    if (!req.auth || plan.userId !== req.auth.userId) {
-      return sendError(res, 401, 'Unauthorized')
-    }
-
-    const updated = await db.recurringDepositPlan.update({
-      where: { id },
-      data: { status: 'CANCELLED' },
-    })
-
-    logger.info('[RecurringDeposit] Plan cancelled', { planId: id })
-
-    return res.json({ plan: updated })
+  const plan = await db.recurringDepositPlan.findUnique({ where: { id } })
+  if (!plan) {
+    return sendNotFound(res, 'Recurring deposit plan')
   }
-)
+
+  if (!req.auth || plan.userId !== req.auth.userId) {
+    return sendError(res, 401, 'Unauthorized')
+  }
+
+  const updated = await db.recurringDepositPlan.update({
+    where: { id },
+    data: { status: 'CANCELLED' },
+  })
+
+  logger.info('[RecurringDeposit] Plan cancelled', { planId: id })
+
+  return res.json({ plan: updated })
+})
 
 export default router

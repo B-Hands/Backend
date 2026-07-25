@@ -65,9 +65,7 @@ async function claimDuePlan(
 /**
  * Execute a single recurring deposit plan.
  */
-async function executePlan(
-  plan: RecurringDepositPlan
-): Promise<void> {
+async function executePlan(plan: RecurringDepositPlan): Promise<void> {
   const wallet = await db.custodialWallet.findUnique({
     where: { userId: plan.userId },
     select: { publicKey: true },
@@ -119,8 +117,7 @@ async function executePlan(
       await failPlan(plan, 'transaction_failed')
     }
   } catch (err) {
-    const reason =
-      err instanceof Error ? err.message : 'unknown_error'
+    const reason = err instanceof Error ? err.message : 'unknown_error'
 
     // Detect insufficient-funds specifically if the error message indicates it
     const isInsufficientFunds =
@@ -185,9 +182,15 @@ export async function processRecurringDeposits(): Promise<void> {
         return
       }
 
-      logBackgroundJob(jobName, 'success', (Date.now() - startTime) / 1000, correlationId, {
-        dueCount: duePlans.length,
-      })
+      logBackgroundJob(
+        jobName,
+        'success',
+        (Date.now() - startTime) / 1000,
+        correlationId,
+        {
+          dueCount: duePlans.length,
+        }
+      )
 
       // Process each plan; failures are caught individually
       for (const plan of duePlans) {
