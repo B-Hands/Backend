@@ -185,7 +185,13 @@ export async function triggerRebalance(
   toProtocol: string,
   amount: string,
   positionIds: string[] = [],
-  strategyInfo?: { name: string; reasoning: string; deviationTrigger?: string }
+  strategyInfo?: {
+    name: string
+    reasoning: string
+    deviationTrigger?: string
+    /** PublishedStrategy this config was copied from (#285). Attribution only. */
+    followedStrategyId?: string | null
+  }
 ): Promise<RebalanceDetails | null> {
   const startTime = Date.now()
 
@@ -279,6 +285,7 @@ export async function triggerRebalance(
             strategyName: strategyInfo?.name,
             reasoning: strategyInfo?.reasoning,
             deviationTrigger: strategyInfo?.deviationTrigger,
+            followedStrategyId: strategyInfo?.followedStrategyId,
           },
           pos.userId,
           pos.id
@@ -291,6 +298,7 @@ export async function triggerRebalance(
         strategyName: strategyInfo?.name,
         reasoning: strategyInfo?.reasoning,
         deviationTrigger: strategyInfo?.deviationTrigger,
+        followedStrategyId: strategyInfo?.followedStrategyId,
       })
     }
 
@@ -416,6 +424,11 @@ export async function executeRebalanceIfNeeded(
           name: strategy.name,
           reasoning: decision.reasoning,
           deviationTrigger: decision.deviationTrigger,
+          // Attribution only (#285): which published strategy this config was
+          // copied from. Never used to make a decision — the config was already
+          // merged and risk-clamped by loop.ts before it got here. Undefined for
+          // every user who follows nothing, leaving the log row unchanged.
+          followedStrategyId: userStrategyPreferences[0]?.followedStrategyId,
         }
       )
     }

@@ -154,6 +154,8 @@ model User {
   costBasisLots         CostBasisLot[]
   lotDisposals          LotDisposal[]
   savingsGoals          SavingsGoal[]
+  publishedStrategy     PublishedStrategy?
+  strategyFollows       StrategyFollow[]
 
   @@map("users")
 }
@@ -694,4 +696,104 @@ model SavingsGoal {
   @@index([status])
   @@index([userId, status])
   @@map("savings_goals")
+}
+
+/// Strategy marketplace (#285). An opt-in, anonymized snapshot of one user's
+/// agent *configuration* — never funds, never custody, never keys. Publishing
+/// copies nothing but `{ strategyName, targetAllocations?, riskCeiling? }`, the
+/// exact three keys the agent loop reads off User.strategyConfig.
+///
+/// One row per user (`userId @unique`): publish always acts on the caller, so
+/// re-publishing upserts rather than accumulating rows. `label` is user-supplied
+/// free text and is the one self-doxx vector — the Zod validator in
+/// src/validators/strategy-validators.ts rejects Stellar addresses and long hex
+/// runs. Nothing in this model or its query paths may expose `userId` to
+/// another user; see docs/STRATEGY_MARKETPLACE.md for the privacy boundary.
+///
+/// `configVersion` is bumped ONLY on a material config change (a `label` edit is
+/// cosmetic and must not spam followers) and is what drives follower
+/// notifications and re-snapshotting.
+model PublishedStrategy {
+  id             String    @id @default(uuid())
+  userId         String    @unique
+  label          String
+  strategyConfig Json
+  configVersion  Int       @default(1)
+  isPublished    Boolean   @default(false)
+  publishedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  user      User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  followers StrategyFollow[]
+  metrics   PublishedStrategyMetric[]
+
+  @@index([isPublished])
+  @@map("published_strategies")
+}
+
+/// A follower's opt-in link to a published strategy (#285).
+///
+/// `appliedConfig` is a SNAPSHOT, not a live read-through: it is what the agent
+/// actually applies. That is deliberate — when a publisher unpublishes or
+/// deletes their account the follower must keep working on their last-applied
+/// configuration rather than silently reverting. Hence `publishedStrategyId` is
+/// nullable with `onDelete: SetNull`: deleting the publisher orphans the follow
+/// with its config intact instead of cascading the follow row away.
+///
+/// "At most one active follow per user" is enforced structurally by a raw-SQL
+/// PARTIAL unique index (`WHERE "unfollowedAt" IS NULL`) added in the migration —
+/// Prisma cannot express partial uniques, so it is not visible here.
+model StrategyFollow {
+  id                   String    @id @default(uuid())
+  followerUserId       String
+  publishedStrategyId  String?
+  appliedConfig        Json
+  appliedConfigVersion Int
+  appliedAt            DateTime
+  followedAt           DateTime  @default(now())
+  unfollowedAt         DateTime?
+
+  follower          User               @relation(fields: [followerUserId], references: [id], onDelete: Cascade)
+  publishedStrategy PublishedStrategy? @relation(fields: [publishedStrategyId], references: [id], onDelete: SetNull)
+
+  @@index([followerUserId, unfollowedAt])
+  @@index([publishedStrategyId, unfollowedAt])
+  @@map("strategy_follows")
+}
+
+/// Precomputed leaderboard metrics for a published strategy (#285), one row per
+/// (strategy, window).
+///
+/// Persisted rather than computed per request for two reasons: the leaderboard
+/// must `ORDER BY` the score with `skip`/`take` (a JS-computed value cannot be
+/// ordered in SQL), and recomputing every publisher's 90-day snapshot history on
+/// a semi-public endpoint is a DoS vector. Same precedent as ProtocolRiskScore +
+/// src/jobs/protocolRiskScoring.ts.
+///
+/// `windowDays` is 30 or 90 only — src/agent/snapshotter.ts hard-deletes
+/// YieldSnapshot rows past 90 days, so a "1y" window would silently return a
+/// 90-day figure under a wrong label.
+///
+/// `isEligible` is the anti-gaming gate (track record + sample count + a
+/// computable Sharpe). Ineligible strategies are excluded from the leaderboard
+/// entirely rather than ranked low, so a one-day strategy posting a flattering
+/// APY never appears at all.
+model PublishedStrategyMetric {
+  id                  String   @id @default(uuid())
+  publishedStrategyId String
+  windowDays          Int
+  apy                 Float
+  sharpe              Float?
+  sampleCount         Int
+  trackRecordDays     Int
+  isEligible          Boolean  @default(false)
+  computedAt          DateTime @default(now())
+
+  publishedStrategy PublishedStrategy @relation(fields: [publishedStrategyId], references: [id], onDelete: Cascade)
+
+  @@unique([publishedStrategyId, windowDays])
+  @@index([windowDays, isEligible, sharpe])
+  @@index([windowDays, isEligible, apy])
+  @@map("published_strategy_metrics")
 }

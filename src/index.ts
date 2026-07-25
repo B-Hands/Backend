@@ -49,6 +49,7 @@ import { schedulePoolMetrics } from './jobs/poolMetrics'
 import { scheduleFiatReconciliation } from './jobs/fiatReconciliation'
 import { scheduleReferralPayout } from './jobs/referralPayout'
 import { scheduleAlertRules } from './jobs/alertRules'
+import { scheduleStrategyMetrics } from './jobs/strategyMetrics'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { validateStellarNetworkReady } from './config/readiness'
 import healthRouter from './routes/health'
@@ -69,6 +70,7 @@ import webhooksRouter from './routes/webhooks'
 import fiatRouter from './routes/fiat'
 import referralsRouter from './routes/referrals'
 import alertsRouter from './routes/alerts'
+import strategiesRouter from './routes/strategies'
 import {
   corsMiddleware,
   jsonBodyParser,
@@ -99,6 +101,7 @@ let poolMetricsHandle: NodeJS.Timeout | null = null
 let fiatReconciliationHandle: NodeJS.Timeout | null = null
 let referralPayoutHandle: NodeJS.Timeout | null = null
 let alertRulesHandle: NodeJS.Timeout | null = null
+let strategyMetricsHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
@@ -276,6 +279,7 @@ const apiRoutes: ApiRoute[] = [
   { path: 'fiat', handlers: [fiatRouter] },
   { path: 'referrals', handlers: [referralsRouter] },
   { path: 'alerts', handlers: [alertsRouter] },
+  { path: 'strategies', handlers: [strategiesRouter] },
   { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
 ]
 
@@ -341,6 +345,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(alertRulesHandle)
     alertRulesHandle = null
     logger.info('[Shutdown] Alert rules timer cleared')
+  }
+
+  if (strategyMetricsHandle) {
+    clearInterval(strategyMetricsHandle)
+    strategyMetricsHandle = null
+    logger.info('[Shutdown] Strategy metrics timer cleared')
   }
 
   if (!httpServer) {
@@ -499,6 +509,7 @@ async function main(): Promise<void> {
   fiatReconciliationHandle = scheduleFiatReconciliation()
   referralPayoutHandle = scheduleReferralPayout()
   alertRulesHandle = scheduleAlertRules()
+  strategyMetricsHandle = scheduleStrategyMetrics()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────

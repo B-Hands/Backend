@@ -481,6 +481,22 @@ export const config = {
     /** Interval between user alert-rule evaluation sweeps in ms (default: 1 minute). */
     intervalMs: parseInt(process.env.ALERT_RULES_INTERVAL_MS || '60000'),
   },
+  strategyMarketplace: {
+    /**
+     * Interval between strategy-marketplace metric recomputations in ms
+     * (default: 6 hours, matching protocolRisk). Leaderboard figures are
+     * derived from hourly snapshots, so a faster cadence buys nothing but load.
+     */
+    metricsIntervalMs: parseInt(
+      process.env.STRATEGY_METRICS_INTERVAL_MS || '21600000'
+    ),
+    /**
+     * Annual risk-free rate used as the Sharpe baseline, as a decimal
+     * (0.04 = 4%). Defaults to 0 — stating it explicitly beats a hidden
+     * non-zero assumption. See docs/STRATEGY_MARKETPLACE.md.
+     */
+    riskFreeRate: parseFloat(process.env.STRATEGY_RISK_FREE_RATE || '0'),
+  },
   referral: {
     /**
      * Minimum confirmed deposit (in asset units) that a referred user must make

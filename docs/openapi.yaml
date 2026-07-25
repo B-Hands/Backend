@@ -56,6 +56,12 @@ tags:
     description: Referral rewards program (share a code, earn when referred users deposit)
   - name: goals
     description: Goal-based investing — a target amount + date driving the agent's strategy selection
+  - name: strategies
+    description: >
+      Strategy marketplace — opt-in copy-trading of anonymized agent
+      configurations. Configuration only: following a strategy never moves
+      funds, never transfers custody, and never exposes the publisher's
+      identity. See docs/STRATEGY_MARKETPLACE.md.
   - name: admin
     description: Admin-only management endpoints
   - name: metrics
@@ -2700,6 +2706,278 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/v1/strategies/publish:
+    post:
+      tags: [strategies]
+      operationId: publishStrategy
+      summary: Publish the caller's strategy to the marketplace
+      description: >
+        Publishes (or re-publishes) an anonymized snapshot of the caller's own
+        agent configuration. One listing per user — a second call updates the
+        same listing.
+
+
+        `strategyConfig` carries only the three keys the agent acts on
+        (`strategyName`, `targetAllocations`, `riskCeiling`). `riskTolerance` is
+        never copied; it stays personal to each user. Omit `strategyConfig` to
+        snapshot whatever the caller is currently running.
+
+
+        `configVersion` increments only on a MATERIAL change to those three
+        keys — a label-only edit is cosmetic and notifies nobody. When it does
+        increment, every active follower's applied snapshot is rewritten in the
+        same transaction and they receive a `strategy.updated` notification.
+
+
+        `label` is free text shown to strangers and is rejected (not stripped)
+        if it contains a Stellar address or a long hexadecimal run.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishStrategyRequest'
+      responses:
+        '200':
+          description: The caller's listing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishStrategyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/strategies/unpublish:
+    post:
+      tags: [strategies]
+      operationId: unpublishStrategy
+      summary: Delist the caller's strategy
+      description: >
+        Removes the caller's listing from every marketplace query immediately.
+
+
+        Existing follows are NOT severed. Followers keep the configuration
+        snapshot they already copied and their agent keeps running unchanged —
+        silently reverting someone's live configuration because a stranger
+        delisted theirs would change what the agent does with the follower's
+        money without the follower ever acting. Followers receive a
+        `strategy.unpublished` notification.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: The delisted listing
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [strategy]
+                properties:
+                  strategy:
+                    $ref: '#/components/schemas/PublishedStrategy'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/strategies/marketplace:
+    get:
+      tags: [strategies]
+      operationId: getStrategyMarketplace
+      summary: Browse the ranked, anonymized leaderboard
+      description: >
+        Returns published strategies ranked by a precomputed, risk-adjusted
+        score. No response field identifies a publisher: no `userId`, no wallet
+        address, no absolute balance — only the configuration and derived
+        statistics.
+
+
+        Strategies below the eligibility gate (at least 30 days of track record,
+        at least 14 portfolio samples, and a computable Sharpe ratio) are
+        excluded ENTIRELY rather than ranked low, so a one-day strategy posting
+        a flattering APY never appears.
+
+
+        `window` accepts `30d` and `90d` only. Yield snapshots are retained for
+        90 days, so a longer window has no data behind it and is rejected with a
+        400 rather than silently downgraded.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: sortBy
+          schema:
+            type: string
+            enum: [apy, sharpe]
+            default: sharpe
+          description: Ranking field. Defaults to the risk-adjusted score.
+        - in: query
+          name: window
+          schema:
+            type: string
+            enum: ['30d', '90d']
+            default: '30d'
+          description: Statistics window. Longer windows are rejected (90-day snapshot retention).
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        '200':
+          description: A page of the leaderboard
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StrategyMarketplaceResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/strategies/following:
+    get:
+      tags: [strategies]
+      operationId: getFollowedStrategy
+      summary: What the caller currently follows
+      description: >
+        Returns the caller's single active follow, or `{ "follow": null }` when
+        they follow nothing — following nothing is a normal state, not a missing
+        resource.
+
+
+        `appliedConfig` is the snapshot the agent actually runs and may lag the
+        live listing (or outlive it entirely, if the publisher delisted or
+        deleted their account). `strategy` is null for such an orphaned follow.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: The caller's active follow, or null
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [follow]
+                properties:
+                  follow:
+                    type: object
+                    nullable: true
+                    allOf:
+                      - $ref: '#/components/schemas/StrategyFollow'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/strategies/{id}/follow:
+    post:
+      tags: [strategies]
+      operationId: followStrategy
+      summary: Follow a published strategy
+      description: >
+        Copies the strategy's configuration into a snapshot the caller's agent
+        applies on its next scheduled run. Configuration only — no funds move,
+        no custody is transferred, and the publisher's identity is never
+        revealed.
+
+
+        A user may follow at most one strategy at a time; following while
+        already following swaps atomically. Following your own strategy is
+        rejected with 409.
+
+
+        The caller's own risk ceiling is never widened: the effective ceiling is
+        the STRICTER of the publisher's and the follower's. An active savings
+        goal continues to outrank a followed configuration.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The published strategy's id (NOT a user id)
+      responses:
+        '201':
+          description: The created follow
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [follow]
+                properties:
+                  follow:
+                    $ref: '#/components/schemas/StrategyFollow'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Self-follow is not permitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/strategies/{id}/unfollow:
+    post:
+      tags: [strategies]
+      operationId: unfollowStrategy
+      summary: Release the caller's follow
+      description: >
+        Ends the caller's active follow. Their agent reverts to their own
+        `rebalanceStrategy`/`strategyConfig` on the next scheduled run.
+
+
+        Also releases an orphaned follow (one whose publisher deleted their
+        account, leaving no strategy id to name).
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The published strategy's id
+      responses:
+        '200':
+          description: The released follow
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, unfollowedAt]
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  unfollowedAt:
+                    type: string
+                    format: date-time
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
 components:
   securitySchemes:
     BearerAuth:
@@ -3353,6 +3631,201 @@ components:
       type: string
       enum: [WEBHOOK, WHATSAPP, BOTH]
       description: Where a triggered alert is delivered.
+    StrategyConfig:
+      type: object
+      description: >
+        The three keys the agent acts on. Nothing else is ever copied to a
+        follower — notably `riskTolerance`, which stays personal.
+      required: [strategyName]
+      properties:
+        strategyName:
+          type: string
+          enum: [MAX_YIELD, TARGET_ALLOCATION]
+          description: >
+            GOAL_TRACKING is not publishable — it is driven by the publisher's
+            own savings goal, which means nothing to a follower.
+        targetAllocations:
+          type: object
+          additionalProperties:
+            type: number
+            minimum: 0
+            maximum: 100
+          description: >
+            Protocol name → percentage weight. Required when strategyName is
+            TARGET_ALLOCATION, and must sum to 100 — followers inherit these
+            weights verbatim.
+          example:
+            Blend: 60
+            Luma: 40
+        riskCeiling:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: >
+            Minimum acceptable protocol risk score (higher = lower risk). A
+            follower's effective ceiling is the stricter of theirs and the
+            publisher's.
+
+    PublishStrategyRequest:
+      type: object
+      required: [label]
+      properties:
+        label:
+          type: string
+          maxLength: 60
+          description: >
+            Public display name. Rejected if it contains a Stellar address or a
+            hexadecimal run of 32+ characters — published strategies are
+            anonymous.
+          example: Steady conservative yield
+        strategyConfig:
+          $ref: '#/components/schemas/StrategyConfig'
+
+    PublishedStrategy:
+      type: object
+      description: >
+        A marketplace listing. Deliberately carries no `userId` — the publisher
+        is anonymous to everyone including followers.
+      required: [id, label, strategyConfig, configVersion, isPublished]
+      properties:
+        id:
+          type: string
+          format: uuid
+        label:
+          type: string
+          example: Steady conservative yield
+        strategyConfig:
+          $ref: '#/components/schemas/StrategyConfig'
+        configVersion:
+          type: integer
+          description: Incremented only on a material configuration change.
+        isPublished:
+          type: boolean
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    PublishStrategyResponse:
+      type: object
+      required: [strategy, materialChange]
+      properties:
+        strategy:
+          $ref: '#/components/schemas/PublishedStrategy'
+        materialChange:
+          type: boolean
+          description: >
+            True when this publish changed the configuration and therefore
+            bumped `configVersion` and notified followers.
+
+    StrategyMarketplaceEntry:
+      type: object
+      description: >
+        One leaderboard row. Statistics are derived and relative — never an
+        absolute balance, and never anything identifying the publisher.
+      required:
+        - strategyId
+        - label
+        - strategyConfig
+        - windowDays
+        - apy
+        - sampleCount
+        - trackRecordDays
+      properties:
+        strategyId:
+          type: string
+          format: uuid
+        label:
+          type: string
+        strategyConfig:
+          $ref: '#/components/schemas/StrategyConfig'
+        configVersion:
+          type: integer
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        windowDays:
+          type: integer
+          enum: [30, 90]
+        apy:
+          type: number
+          description: Annualized return over the window, in percent (simple, non-compounding).
+        sharpe:
+          type: number
+          nullable: true
+          description: >
+            Risk-adjusted return. Null when not computable (too few samples, or a
+            zero-variance series) — never faked as 0. Eligible entries always
+            have a value.
+        sampleCount:
+          type: integer
+        trackRecordDays:
+          type: integer
+          description: Days of observed history. At least 30 for any listed entry.
+        computedAt:
+          type: string
+          format: date-time
+
+    StrategyMarketplaceResponse:
+      type: object
+      required: [page, limit, total, window, sortBy, strategies]
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+        window:
+          type: string
+          enum: ['30d', '90d']
+        sortBy:
+          type: string
+          enum: [apy, sharpe]
+        strategies:
+          type: array
+          items:
+            $ref: '#/components/schemas/StrategyMarketplaceEntry'
+
+    StrategyFollow:
+      type: object
+      required: [id, appliedConfig, appliedConfigVersion, appliedAt, followedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        strategyId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null when the publisher deleted their account (the follow is orphaned).
+        appliedConfig:
+          allOf:
+            - $ref: '#/components/schemas/StrategyConfig'
+          description: >
+            The snapshot the agent actually runs. May lag the live listing, and
+            outlives it if the publisher delists or deletes their account.
+        appliedConfigVersion:
+          type: integer
+        appliedAt:
+          type: string
+          format: date-time
+        followedAt:
+          type: string
+          format: date-time
+        strategy:
+          type: object
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PublishedStrategy'
+
     AlertRule:
       type: object
       required:
