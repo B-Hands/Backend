@@ -103,18 +103,20 @@ describe('HttpClientAdapter', () => {
     })
 
     it('should transition to half-open after reset timeout', async () => {
+      jest.useFakeTimers()
       const fn = jest.fn().mockRejectedValue(new Error('fail'))
 
-      // Trigger circuit breaker (3 failures needed)
+      // Trigger circuit breaker (3 failures needed) — deterministic under fake timers
       for (let i = 0; i < 3; i++) {
-        await expect(adapter.execute(fn)).rejects.toThrow()
+        const p = expect(adapter.execute(fn)).rejects.toThrow()
+        await jest.runAllTimersAsync()
+        await p
       }
 
       // Circuit is OPEN - should block
       await expect(adapter.execute(fn)).rejects.toThrow(CircuitBreakerError)
 
       // Advance past reset timeout
-      jest.useFakeTimers()
       jest.advanceTimersByTime(200)
 
       // Should now be half-open and allow one request
