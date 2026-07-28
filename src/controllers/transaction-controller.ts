@@ -13,6 +13,7 @@ export interface ExecuteDepositParams {
   amount: number
   assetSymbol: string
   memo?: string
+  actingAsUserId?: string | null
 }
 
 export interface ExecuteDepositResult {
@@ -28,7 +29,8 @@ export interface ExecuteDepositResult {
 export async function executeDeposit(
   params: ExecuteDepositParams
 ): Promise<ExecuteDepositResult> {
-  const { userId, walletAddress, amount, assetSymbol, memo } = params
+  const { userId, walletAddress, amount, assetSymbol, memo, actingAsUserId } =
+    params
 
   const user = await db.user.findUnique({
     where: { id: userId },
@@ -72,6 +74,7 @@ export async function executeDeposit(
   const transaction = await db.transaction.create({
     data: {
       userId,
+      actingAsUserId: actingAsUserId ?? null,
       txHash: onChainResult.hash,
       type: 'DEPOSIT',
       status: transactionStatus,
@@ -104,9 +107,18 @@ export async function processOnChainTransaction(
 ) {
   const { userId, amount, assetSymbol, protocolName, memo } = req.body
 
-  if (!req.auth || req.auth.userId !== userId) {
+  if (!req.auth) {
     return sendUnauthorized(res)
   }
+
+  // Allow if acting on own behalf OR if this is a verified sub-account delegation
+  const isSelf = req.auth.userId === userId
+  const isDelegated = req.auth.actingAsUserId !== undefined
+  if (!isSelf && !isDelegated) {
+    return sendUnauthorized(res)
+  }
+
+  const actingAsUserId = req.auth.actingAsUserId ?? null
 
   if (type === 'WITHDRAWAL') {
     const user = await db.user.findUnique({
@@ -155,6 +167,7 @@ export async function processOnChainTransaction(
     const transaction = await db.transaction.create({
       data: {
         userId,
+        actingAsUserId,
         txHash: onChainTransaction.hash,
         type,
         status: transactionStatus,
@@ -204,6 +217,7 @@ export async function processOnChainTransaction(
     amount,
     assetSymbol,
     memo,
+    actingAsUserId,
   })
 
   return res.status(201).json({
