@@ -11,4 +11,5 @@ export {
   permissionsPolicy,
 } from './security'
 export { requireAuth, enforceUserAccess, AuthMiddleware } from './authenticate'
+export { requireSubAccountPermission } from './subAccount'
 export type {} from './authenticate' // re-export augmented Request types

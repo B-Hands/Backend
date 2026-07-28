@@ -48,6 +48,7 @@ import { scheduleDataRetention } from './jobs/dataRetention'
 import { schedulePoolMetrics } from './jobs/poolMetrics'
 import { scheduleFiatReconciliation } from './jobs/fiatReconciliation'
 import { scheduleReferralPayout } from './jobs/referralPayout'
+import { scheduleRecurringDeposits } from './jobs/recurringDeposits'
 import { scheduleAlertRules } from './jobs/alertRules'
 import { scheduleStrategyMetrics } from './jobs/strategyMetrics'
 import { startEventListener, stopEventListener } from './stellar/events'
@@ -56,6 +57,7 @@ import healthRouter from './routes/health'
 import agentRouter from './routes/agent'
 import authRouter from './routes/auth'
 import whatsappRouter from './routes/whatsapp'
+import telegramRouter from './routes/telegram'
 import portfolioRouter from './routes/portfolio'
 import transactionsRouter from './routes/transactions'
 import protocolsRouter from './routes/protocols'
@@ -69,8 +71,10 @@ import stellarRouter from './routes/stellar'
 import webhooksRouter from './routes/webhooks'
 import fiatRouter from './routes/fiat'
 import referralsRouter from './routes/referrals'
+import recurringDepositRouter from './routes/recurring-deposits'
 import alertsRouter from './routes/alerts'
 import strategiesRouter from './routes/strategies'
+import subAccountsRouter from './routes/sub-accounts'
 import {
   corsMiddleware,
   jsonBodyParser,
@@ -100,6 +104,7 @@ let dataRetentionHandle: NodeJS.Timeout | null = null
 let poolMetricsHandle: NodeJS.Timeout | null = null
 let fiatReconciliationHandle: NodeJS.Timeout | null = null
 let referralPayoutHandle: NodeJS.Timeout | null = null
+let recurringDepositsHandle: NodeJS.Timeout | null = null
 let alertRulesHandle: NodeJS.Timeout | null = null
 let strategyMetricsHandle: NodeJS.Timeout | null = null
 
@@ -268,6 +273,7 @@ const apiRoutes: ApiRoute[] = [
   { path: 'agent', handlers: [internalRateLimiter, agentRouter] },
   { path: 'auth', handlers: [authRateLimiter, authRouter] },
   { path: 'whatsapp', handlers: [webhookRateLimiter, whatsappRouter] },
+  { path: 'telegram', handlers: [webhookRateLimiter, telegramRouter] },
   { path: 'portfolio', handlers: [portfolioRouter] },
   { path: 'transactions', handlers: [transactionsRouter] },
   { path: 'protocols', handlers: [protocolsRouter] },
@@ -278,14 +284,18 @@ const apiRoutes: ApiRoute[] = [
   { path: 'stellar', handlers: [stellarRouter] },
   { path: 'fiat', handlers: [fiatRouter] },
   { path: 'referrals', handlers: [referralsRouter] },
+  { path: 'deposit/recurring', handlers: [recurringDepositRouter] },
   { path: 'alerts', handlers: [alertsRouter] },
   { path: 'strategies', handlers: [strategiesRouter] },
+  { path: 'sub-accounts', handlers: [subAccountsRouter] },
   { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
 ]
 
 // ── Application routes ────────────────────────────────────────────────────────
 
 app.use('/health', healthRouter)
+app.use('/api/analytics', analyticsRouter)
+app.use('/api/stellar', stellarRouter)
 app.use('/api/webhooks', webhooksRouter)
 app.use('/metrics', metricsRouter)
 
@@ -339,6 +349,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(referralPayoutHandle)
     referralPayoutHandle = null
     logger.info('[Shutdown] Referral payout timer cleared')
+  }
+
+  if (recurringDepositsHandle) {
+    clearInterval(recurringDepositsHandle)
+    recurringDepositsHandle = null
+    logger.info('[Shutdown] Recurring deposits timer cleared')
   }
 
   if (alertRulesHandle) {
@@ -508,6 +524,7 @@ async function main(): Promise<void> {
   poolMetricsHandle = schedulePoolMetrics()
   fiatReconciliationHandle = scheduleFiatReconciliation()
   referralPayoutHandle = scheduleReferralPayout()
+  recurringDepositsHandle = scheduleRecurringDeposits()
   alertRulesHandle = scheduleAlertRules()
   strategyMetricsHandle = scheduleStrategyMetrics()
 }

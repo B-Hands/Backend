@@ -526,4 +526,10 @@ export const config = {
       process.env.REFERRAL_PAYOUT_INTERVAL_MS || '120000'
     ),
   },
+  recurringDeposits: {
+    /** How often (ms) to poll for due recurring deposit plans (default: 5 minutes). */
+    intervalMs: parseInt(
+      process.env.RECURRING_DEPOSITS_INTERVAL_MS || '300000'
+    ),
+  },
 }
