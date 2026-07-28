@@ -50,6 +50,7 @@ import { scheduleFiatReconciliation } from './jobs/fiatReconciliation'
 import { scheduleReferralPayout } from './jobs/referralPayout'
 import { scheduleRecurringDeposits } from './jobs/recurringDeposits'
 import { scheduleAlertRules } from './jobs/alertRules'
+import { scheduleStrategyMetrics } from './jobs/strategyMetrics'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { validateStellarNetworkReady } from './config/readiness'
 import healthRouter from './routes/health'
@@ -72,6 +73,7 @@ import fiatRouter from './routes/fiat'
 import referralsRouter from './routes/referrals'
 import recurringDepositRouter from './routes/recurring-deposits'
 import alertsRouter from './routes/alerts'
+import strategiesRouter from './routes/strategies'
 import subAccountsRouter from './routes/sub-accounts'
 import {
   corsMiddleware,
@@ -104,6 +106,7 @@ let fiatReconciliationHandle: NodeJS.Timeout | null = null
 let referralPayoutHandle: NodeJS.Timeout | null = null
 let recurringDepositsHandle: NodeJS.Timeout | null = null
 let alertRulesHandle: NodeJS.Timeout | null = null
+let strategyMetricsHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
@@ -283,6 +286,7 @@ const apiRoutes: ApiRoute[] = [
   { path: 'referrals', handlers: [referralsRouter] },
   { path: 'deposit/recurring', handlers: [recurringDepositRouter] },
   { path: 'alerts', handlers: [alertsRouter] },
+  { path: 'strategies', handlers: [strategiesRouter] },
   { path: 'sub-accounts', handlers: [subAccountsRouter] },
   { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
 ]
@@ -357,6 +361,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(alertRulesHandle)
     alertRulesHandle = null
     logger.info('[Shutdown] Alert rules timer cleared')
+  }
+
+  if (strategyMetricsHandle) {
+    clearInterval(strategyMetricsHandle)
+    strategyMetricsHandle = null
+    logger.info('[Shutdown] Strategy metrics timer cleared')
   }
 
   if (!httpServer) {
@@ -516,6 +526,7 @@ async function main(): Promise<void> {
   referralPayoutHandle = scheduleReferralPayout()
   recurringDepositsHandle = scheduleRecurringDeposits()
   alertRulesHandle = scheduleAlertRules()
+  strategyMetricsHandle = scheduleStrategyMetrics()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────

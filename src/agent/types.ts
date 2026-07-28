@@ -136,4 +136,11 @@ export interface UserStrategyPreferences {
    * filtering, identical to prior behavior.
    */
   riskCeiling?: number
+  /**
+   * Id of the PublishedStrategy this user's config was copied from (#285), when
+   * they follow one. Carried for AgentLog attribution only — it is never used to
+   * make a decision and never reaches another user's response. Absent for the
+   * overwhelming majority of users, who follow nothing.
+   */
+  followedStrategyId?: string | null
 }

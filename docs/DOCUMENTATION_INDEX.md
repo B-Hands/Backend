@@ -9,6 +9,7 @@
 - **[IMPLEMENTATION_DETAILS.md](IMPLEMENTATION_DETAILS.md)** - Deep dive into implementation
 - **[API_REFERENCE.md](API_REFERENCE.md)** - Complete backend endpoint reference
 - **[TAX_REPORT.md](TAX_REPORT.md)** - Tax reporting & FIFO cost-basis lot tracking (#284)
+- **[STRATEGY_MARKETPLACE.md](STRATEGY_MARKETPLACE.md)** - Strategy marketplace / opt-in copy-trading: metric formula, eligibility gate, privacy & custody boundaries (#285)
 
 ### For DevOps/Deployment
 
@@ -272,9 +273,9 @@ grep "RPC" logs/*.log
 ### For Code Review
 
 1. CODE_STRUCTURE.md - Architecture
-3. IMPLEMENTATION_DETAILS.md - Technical details
-4. Review src/stellar/events.ts - Code review
-5. Review tests - Test coverage
+2. IMPLEMENTATION_DETAILS.md - Technical details
+3. Review src/stellar/events.ts - Code review
+4. Review tests - Test coverage
 
 ---
 

@@ -16,6 +16,12 @@ import {
 } from './router'
 import { dispatchWebhookEvent } from '../services/webhookDispatcher'
 import { captureAllUserBalances, cleanupOldSnapshots } from './snapshotter'
+import { resolveEffectiveConfig } from './effectiveStrategy'
+import {
+  loadActiveFollowsForUsers,
+  type ActiveFollowConfig,
+} from '../strategy/service'
+import type { StrategyName } from './types'
 import db from '../db'
 import {
   updateAgentHeartbeat as metricsUpdateAgentHeartbeat,
@@ -110,38 +116,107 @@ async function rebalanceCheckJob(): Promise<void> {
         return
       }
 
-      // Group by (protocol, strategy) so users with different strategies
-      // are evaluated independently
       type PositionWithUser = (typeof positions)[number]
-      const byProtocolAndStrategy = new Map<string, PositionWithUser[]>()
-      for (const pos of positions) {
-        const strategy = (pos.user as any).rebalanceStrategy || 'DEFAULT'
-        const key = `${pos.protocolName}:${strategy}`
-        if (!byProtocolAndStrategy.has(key)) {
-          byProtocolAndStrategy.set(key, [])
+
+      // Strategy marketplace (#285): one query for the whole tick, not one per
+      // user. Returns an empty Map when nobody in the batch follows anything —
+      // which is the path every user without a follow takes.
+      const userIds = Array.from(
+        new Set(positions.map((p: PositionWithUser) => p.userId))
+      )
+      const followsByUser = await loadActiveFollowsForUsers(userIds)
+
+      // Resolve each user's effective config once. With no follow this is the
+      // user's own values read exactly as they were before #285 — the raw
+      // strategyConfig fields, uncoerced — so the no-follow path stays a
+      // byte-for-byte no-op (asserted by the regression test in
+      // tests/integration/agent/strategy-follow.integration.test.ts).
+      const effectiveByUser = new Map<
+        string,
+        {
+          config: ReturnType<typeof resolveEffectiveConfig>
+          follow?: ActiveFollowConfig
         }
-        byProtocolAndStrategy.get(key)!.push(pos)
+      >()
+      for (const pos of positions) {
+        if (effectiveByUser.has(pos.userId)) continue
+        const user = pos.user as any
+        const own = {
+          strategyName: (user.rebalanceStrategy || null) as StrategyName | null,
+          targetAllocations:
+            user.strategyConfig?.targetAllocations || undefined,
+          riskCeiling: user.strategyConfig?.riskCeiling,
+        }
+        const follow = followsByUser.get(pos.userId)
+        effectiveByUser.set(pos.userId, {
+          config: resolveEffectiveConfig(own, follow?.appliedConfig),
+          follow,
+        })
+      }
+
+      // Group by (protocol, effective strategy, follow) so users with different
+      // strategies are evaluated independently.
+      //
+      // HAZARD: router.ts reads only userStrategyPreferences[0]. Without the
+      // follow component in this key, two followers of DIFFERENT published
+      // strategies sharing a protocol would collapse into one batch and both be
+      // rebalanced on index 0's config — including index 0's risk ceiling.
+      // Keying on the per-user follow id (not the followed strategy id) is
+      // deliberate: two followers of the SAME strategy can still have different
+      // effective ceilings, because a follow clamps to the stricter of publisher
+      // and follower. It costs some batching; it buys risk correctness.
+      //
+      // For users without a follow the component is the constant 'none', so
+      // grouping is identical to before this feature.
+      const byProtocolAndStrategy = new Map<
+        string,
+        { protocol: string; positions: PositionWithUser[] }
+      >()
+      for (const pos of positions) {
+        const { config, follow } = effectiveByUser.get(pos.userId)!
+        const key = `${pos.protocolName}:${config.strategyName || 'DEFAULT'}:${
+          follow?.followId ?? 'none'
+        }`
+        if (!byProtocolAndStrategy.has(key)) {
+          byProtocolAndStrategy.set(key, {
+            protocol: pos.protocolName,
+            positions: [],
+          })
+        }
+        byProtocolAndStrategy.get(key)!.positions.push(pos)
       }
 
       let rebalancesTriggered = 0
       const thresholds = getThresholds()
 
-      for (const [key, protocolPositions] of byProtocolAndStrategy.entries()) {
-        const [protocol, strategyKey] = key.split(':')
-        const strategyName = strategyKey === 'DEFAULT' ? undefined : strategyKey
+      for (const batch of byProtocolAndStrategy.values()) {
+        const { protocol, positions: protocolPositions } = batch
+        const lead = effectiveByUser.get(protocolPositions[0].userId)!
 
-        // Build per-user strategy preferences
-        const userStrategyPreferences = strategyName
-          ? protocolPositions.map((p: any) => ({
-              userId: p.userId,
-              strategyName: p.user.rebalanceStrategy || null,
-              targetAllocations:
-                p.user.strategyConfig?.targetAllocations || undefined,
-              riskTolerance: p.user.riskTolerance,
-              // Opt-in risk ceiling (0-100 min protocol risk score). Absent for
-              // users who never configured one, keeping agent behavior unchanged.
-              riskCeiling: p.user.strategyConfig?.riskCeiling,
-            }))
+        // HAZARD: this guard used to be `strategyName ? … : undefined`, and
+        // executeRebalanceIfNeeded skips the strategy engine entirely when
+        // preferences are undefined. A follower whose OWN rebalanceStrategy is
+        // null — the common case for a new user, and exactly who this feature
+        // targets — would have had their followed config silently ignored.
+        const hasStrategyContext =
+          Boolean(lead.config.strategyName) || Boolean(lead.follow)
+
+        const userStrategyPreferences = hasStrategyContext
+          ? protocolPositions.map((p: PositionWithUser) => {
+              const { config, follow } = effectiveByUser.get(p.userId)!
+              return {
+                userId: p.userId,
+                strategyName: config.strategyName,
+                targetAllocations: config.targetAllocations,
+                riskTolerance: (p.user as any).riskTolerance,
+                // Opt-in risk ceiling (0-100 min protocol risk score). Absent for
+                // users who never configured one, keeping agent behavior unchanged.
+                // Under a follow this is already clamped to the STRICTER of
+                // publisher and follower — see resolveEffectiveConfig.
+                riskCeiling: config.riskCeiling,
+                followedStrategyId: follow?.followedStrategyId ?? undefined,
+              }
+            })
           : undefined
 
         const result = await executeRebalanceIfNeeded(

@@ -36,6 +36,11 @@ const WEBHOOK_EVENTS = [
   'recurring_deposit.executed',
   'recurring_deposit.failed',
   'alert_rule.triggered',
+  // Strategy marketplace (#285). Dispatched once per active follower, so the
+  // payload carries `followerUserId` — a subscriber needs to know whose agent
+  // is affected. Never carries the publisher's identity.
+  'strategy.updated',
+  'strategy.unpublished',
 ] as const
 
 export const createWebhookSchema = z.object({

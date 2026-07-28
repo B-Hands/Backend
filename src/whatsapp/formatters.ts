@@ -326,3 +326,33 @@ export function formatAlertDeletedReply(found: boolean): string {
     ? '🗑️ *Alert deleted.*'
     : "I couldn't find an alert with that ID that belongs to you."
 }
+
+/**
+ * Sent to a follower when a strategy they follow changes materially (#285).
+ * Names the label only — never the publisher, who is anonymous to followers.
+ */
+export function formatStrategyUpdatedReply(input: {
+  label: string
+  configVersion: number
+}): string {
+  return [
+    '🔄 *Strategy updated*',
+    `A strategy you follow — _${input.label}_ — changed its configuration (v${input.configVersion}).`,
+    'Your agent will apply it on its next scheduled run. Your own risk ceiling still applies.',
+  ].join('\n')
+}
+
+/**
+ * Sent to a follower when a strategy they follow is delisted (#285). The
+ * reassurance is the point: nothing about their agent changes, so the message
+ * must not read as an action item.
+ */
+export function formatStrategyUnpublishedReply(input: {
+  label: string
+}): string {
+  return [
+    '📴 *Strategy delisted*',
+    `_${input.label}_ is no longer listed on the marketplace.`,
+    'Your agent keeps running the configuration you already copied — nothing changes unless you unfollow.',
+  ].join('\n')
+}
