@@ -56,6 +56,7 @@ import healthRouter from './routes/health'
 import agentRouter from './routes/agent'
 import authRouter from './routes/auth'
 import whatsappRouter from './routes/whatsapp'
+import telegramRouter from './routes/telegram'
 import portfolioRouter from './routes/portfolio'
 import transactionsRouter from './routes/transactions'
 import protocolsRouter from './routes/protocols'
@@ -269,6 +270,7 @@ const apiRoutes: ApiRoute[] = [
   { path: 'agent', handlers: [internalRateLimiter, agentRouter] },
   { path: 'auth', handlers: [authRateLimiter, authRouter] },
   { path: 'whatsapp', handlers: [webhookRateLimiter, whatsappRouter] },
+  { path: 'telegram', handlers: [webhookRateLimiter, telegramRouter] },
   { path: 'portfolio', handlers: [portfolioRouter] },
   { path: 'transactions', handlers: [transactionsRouter] },
   { path: 'protocols', handlers: [protocolsRouter] },

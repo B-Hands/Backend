@@ -323,6 +323,65 @@ paths:
                 type: string
                 example: 'Forbidden: invalid Twilio signature'
 
+  /api/v1/telegram:
+    get:
+      tags: [telegram]
+      operationId: telegramWebhookHealth
+      summary: Telegram webhook health check
+      description: Telegram webhook endpoint health check. Returns a simple text response.
+      responses:
+        '200':
+          description: Webhook is alive
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: Telegram webhook is alive
+    post:
+      tags: [telegram]
+      operationId: handleTelegramMessage
+      summary: Handle incoming Telegram message
+      description: |
+        Receives incoming Telegram messages via webhook.
+        Validates the x-telegram-bot-api-secret-token header. Sends the reply through the Telegram Bot API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message:
+                  type: object
+                  properties:
+                    chat:
+                      type: object
+                      properties:
+                        id:
+                          type: integer
+                          description: Telegram chat ID
+                          example: 123456789
+                    text:
+                      type: string
+                      description: Message body
+                      example: What is my portfolio?
+      responses:
+        '200':
+          description: Message accepted and sent to Telegram
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: OK
+        '401':
+          description: Missing or invalid Telegram webhook secret token
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: 'Forbidden: invalid Telegram secret token'
+
   # ── Portfolio ──────────────────────────────────────────────────────────────
   /api/v1/portfolio/{userId}:
     get:
