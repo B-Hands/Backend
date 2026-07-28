@@ -71,6 +71,7 @@ import fiatRouter from './routes/fiat'
 import referralsRouter from './routes/referrals'
 import recurringDepositRouter from './routes/recurring-deposits'
 import alertsRouter from './routes/alerts'
+import subAccountsRouter from './routes/sub-accounts'
 import {
   corsMiddleware,
   jsonBodyParser,
@@ -280,6 +281,7 @@ const apiRoutes: ApiRoute[] = [
   { path: 'referrals', handlers: [referralsRouter] },
   { path: 'deposit/recurring', handlers: [recurringDepositRouter] },
   { path: 'alerts', handlers: [alertsRouter] },
+  { path: 'sub-accounts', handlers: [subAccountsRouter] },
   { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
 ]
 

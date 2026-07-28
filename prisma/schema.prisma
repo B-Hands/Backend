@@ -135,6 +135,18 @@ enum DeliveryChannel {
   BOTH
 }
 
+enum SubAccountPermission {
+  VIEW
+  DEPOSIT
+  WITHDRAW
+  MANAGE_STRATEGY
+}
+
+enum SubAccountStatus {
+  ACTIVE
+  REVOKED
+}
+
 model User {
   id            String   @id @default(uuid())
   walletAddress String   @unique
@@ -167,6 +179,8 @@ model User {
   costBasisLots         CostBasisLot[]
   lotDisposals          LotDisposal[]
   savingsGoals          SavingsGoal[]
+  parentSubAccounts     SubAccount[] @relation("ParentOf")
+  childSubAccounts      SubAccount[] @relation("ChildOf")
 
   @@map("users")
 }
@@ -271,21 +285,22 @@ model Position {
 }
 
 model Transaction {
-  id           String            @id @default(uuid())
-  userId       String
-  positionId   String?
-  txHash       String?           @unique
-  type         TransactionType
-  status       TransactionStatus @default(PENDING)
-  assetSymbol  String
-  amount       Decimal           @db.Decimal(36, 18)
-  fee          Decimal?          @db.Decimal(36, 18)
-  network      Network
-  protocolName String?
-  memo         String?
-  confirmedAt  DateTime?
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
+  id             String            @id @default(uuid())
+  userId         String
+  actingAsUserId String?           // non-null when action was performed by a parent on behalf of a child
+  positionId     String?
+  txHash         String?           @unique
+  type           TransactionType
+  status         TransactionStatus @default(PENDING)
+  assetSymbol    String
+  amount         Decimal           @db.Decimal(36, 18)
+  fee            Decimal?          @db.Decimal(36, 18)
+  network        Network
+  protocolName   String?
+  memo           String?
+  confirmedAt    DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
 
   user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   position Position? @relation(fields: [positionId], references: [id])
@@ -299,6 +314,7 @@ model Transaction {
   @@index([status])
   @@index([createdAt])
   @@index([userId, createdAt])
+  @@index([actingAsUserId])
   @@map("transactions")
 }
 
@@ -371,17 +387,18 @@ model ProtocolRiskScore {
 }
 
 model AgentLog {
-  id           String      @id @default(uuid())
-  userId       String?     // null for system-level actions (scans, alerts)
-  positionId   String?     // set when log is tied to a specific position
-  action       AgentAction
-  status       AgentStatus
-  reasoning    String?     @db.Text
-  inputData    Json?
-  outputData   Json?
-  errorMessage String?
-  durationMs   Int?
-  createdAt    DateTime    @default(now())
+  id             String      @id @default(uuid())
+  userId         String?     // null for system-level actions (scans, alerts)
+  actingAsUserId String?     // non-null when action was performed by a parent on behalf of a child
+  positionId     String?     // set when log is tied to a specific position
+  action         AgentAction
+  status         AgentStatus
+  reasoning      String?     @db.Text
+  inputData      Json?
+  outputData     Json?
+  errorMessage   String?
+  durationMs     Int?
+  createdAt      DateTime    @default(now())
 
   user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -392,6 +409,7 @@ model AgentLog {
   @@index([userId, status])
   @@index([createdAt])
   @@index([userId, createdAt])
+  @@index([actingAsUserId])
   @@map("agent_logs")
 }
 
@@ -540,6 +558,25 @@ model AlertRule {
   @@index([userId])
   @@index([isActive, metric])
   @@map("alert_rules")
+}
+
+model SubAccount {
+  id           String                @id @default(uuid())
+  parentUserId String
+  childUserId  String
+  permissions  SubAccountPermission[]
+  status       SubAccountStatus      @default(ACTIVE)
+  createdAt    DateTime              @default(now())
+  revokedAt    DateTime?
+
+  parent User @relation("ParentOf", fields: [parentUserId], references: [id], onDelete: Cascade)
+  child  User @relation("ChildOf", fields: [childUserId], references: [id], onDelete: Cascade)
+
+  @@unique([parentUserId, childUserId])
+  @@index([parentUserId])
+  @@index([childUserId])
+  @@index([status])
+  @@map("sub_accounts")
 }
 
 /// Fiat on-ramp / off-ramp order (#290).

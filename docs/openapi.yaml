@@ -58,6 +58,8 @@ tags:
     description: Goal-based investing — a target amount + date driving the agent's strategy selection
   - name: admin
     description: Admin-only management endpoints
+  - name: sub-accounts
+    description: Family & team sub-accounts with scoped, revocable permissions
   - name: metrics
     description: Prometheus-compatible metrics endpoint
 
@@ -1086,7 +1088,9 @@ paths:
       summary: Initiate an on-chain deposit
       description: |
         Submits a deposit transaction to the active protocol on behalf of the
-        authenticated user. The user must match the userId in the request body.
+        authenticated user. The user must match the userId in the request body,
+        OR the caller must hold an active sub-account with DEPOSIT permission
+        for the target user.
       security:
         - BearerAuth: []
       requestBody:
@@ -1314,7 +1318,9 @@ paths:
       summary: Initiate an on-chain withdrawal
       description: |
         Submits a withdrawal transaction from the active protocol on behalf of
-        the authenticated user. The user must match the userId in the request body.
+        the authenticated user. The user must match the userId in the request body,
+        OR the caller must hold an active sub-account with WITHDRAW permission
+        for the target user.
       security:
         - BearerAuth: []
       requestBody:
@@ -2859,6 +2865,147 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  # ── Sub-Accounts ───────────────────────────────────────────────────────────
+
+  /api/v1/sub-accounts:
+    post:
+      tags: [sub-accounts]
+      operationId: createSubAccount
+      summary: Create a sub-account relationship
+      description: |
+        Creates a parent→child sub-account link with an initial permission set.
+        The authenticated user becomes the parent. The child must exist and must
+        not already be a parent (no chained sub-accounts).
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [childUserId, permissions]
+              properties:
+                childUserId:
+                  type: string
+                  format: uuid
+                  description: The child user's ID
+                permissions:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/SubAccountPermission'
+                  minItems: 1
+                  maxItems: 4
+                  description: Initial permission set
+            example:
+              childUserId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+              permissions: [VIEW, DEPOSIT]
+      responses:
+        '201':
+          description: Sub-account created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subAccount:
+                    $ref: '#/components/schemas/SubAccount'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Child user not found
+        '409':
+          description: Sub-account relationship already exists
+
+  /api/v1/sub-accounts/{id}/permissions:
+    patch:
+      tags: [sub-accounts]
+      operationId: updateSubAccountPermissions
+      summary: Update sub-account permissions
+      description: |
+        Replaces the permission set for an existing sub-account. Only the
+        parent who owns the sub-account can update permissions.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Sub-account ID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [permissions]
+              properties:
+                permissions:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/SubAccountPermission'
+                  minItems: 1
+                  maxItems: 4
+            example:
+              permissions: [VIEW, DEPOSIT, WITHDRAW]
+      responses:
+        '200':
+          description: Permissions updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subAccount:
+                    $ref: '#/components/schemas/SubAccount'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/sub-accounts/{id}:
+    delete:
+      tags: [sub-accounts]
+      operationId: revokeSubAccount
+      summary: Revoke a sub-account
+      description: |
+        Soft-revokes a sub-account by setting its status to REVOKED. Only the
+        parent who owns the sub-account can revoke it. Revocation takes effect
+        immediately on the next request. The audit trail is preserved.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Sub-account ID
+      responses:
+        '200':
+          description: Sub-account revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subAccount:
+                    $ref: '#/components/schemas/SubAccount'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
 components:
   securitySchemes:
     BearerAuth:
@@ -3230,6 +3377,13 @@ components:
             protocolName:
               type: string
               nullable: true
+            actingAsUserId:
+              type: string
+              format: uuid
+              nullable: true
+              description: >
+                Non-null when the action was performed by a parent on behalf
+                of a child via a sub-account delegation.
 
     # ── Recurring Deposit ──────────────────────────────────────────────────
     RecurringDepositPlan:
@@ -3344,6 +3498,43 @@ components:
             - type: array
               items: {}
             - type: object
+
+    # ── Sub-Accounts ─────────────────────────────────────────────────────────
+    SubAccountPermission:
+      type: string
+      enum: [VIEW, DEPOSIT, WITHDRAW, MANAGE_STRATEGY]
+      description: >
+        Granular permission for sub-account delegation. Permissions are
+        independent flags — having DEPOSIT does not implicitly grant VIEW.
+    SubAccountStatus:
+      type: string
+      enum: [ACTIVE, REVOKED]
+      description: ACTIVE means the sub-account is live; REVOKED means it was soft-deleted.
+    SubAccount:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        parentUserId:
+          type: string
+          format: uuid
+        childUserId:
+          type: string
+          format: uuid
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/SubAccountPermission'
+        status:
+          $ref: '#/components/schemas/SubAccountStatus'
+        createdAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
 
     # ── Fiat ──────────────────────────────────────────────────────────────
     FiatDirection:
