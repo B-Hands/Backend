@@ -103,7 +103,9 @@ export class MaxYieldStrategy implements RebalanceStrategy {
       }
     }
 
-    const bestProtocol = eligibleProtocols[0]
+    const bestProtocol = eligibleProtocols.reduce((best, p) =>
+      p.apy > best.apy ? p : best
+    )
 
     if (bestProtocol.name === currentProtocol) {
       return {
