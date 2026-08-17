@@ -253,6 +253,111 @@ describe('reconcileSingleOrder', () => {
   })
 })
 
+describe('reconcileSingleOrder — quoted-vs-settled drift (#313)', () => {
+  it('persists settledCryptoAmount/settledRate and emits rate_mismatch when drift exceeds tolerance', async () => {
+    const order = baseOrder({
+      status: 'PROCESSING',
+      fiatAmount: 100,
+      quotedCryptoAmount: 100,
+      provider: 'moonpay',
+    })
+    mockDb.fiatOrder.findUnique.mockResolvedValue(order)
+    // 10% short of quote — well beyond the 2% default tolerance.
+    mockDb.transaction.findUnique.mockResolvedValue({
+      id: 'tx-1',
+      txHash: '0xabc',
+      status: 'CONFIRMED',
+      userId: 'user-1',
+      amount: 90,
+    })
+    mockDb.fiatOrder.update.mockImplementation(({ data }: any) => ({
+      ...baseOrder(),
+      ...data,
+    }))
+
+    const ok = await reconcileSingleOrder('order-1', '0xabc')
+
+    expect(ok).toBe(true)
+    const updateArg = mockDb.fiatOrder.update.mock.calls[0][0]
+    expect(updateArg.data.settledCryptoAmount).toBe(90)
+    expect(updateArg.data.settledRate).toBeCloseTo(0.9)
+    expect(mockDispatch).toHaveBeenCalledWith(
+      'fiat.order.rate_mismatch',
+      expect.objectContaining({
+        orderId: 'order-1',
+        quotedCryptoAmount: 100,
+        settledCryptoAmount: 90,
+      })
+    )
+    expect(mockEmit).toHaveBeenCalledWith(
+      expect.objectContaining({ component: 'fiat-settlement' }),
+      expect.stringContaining('fiat:drift:')
+    )
+  })
+
+  it('does not alert when settlement drift is within tolerance', async () => {
+    const order = baseOrder({
+      status: 'PROCESSING',
+      fiatAmount: 100,
+      quotedCryptoAmount: 100,
+    })
+    mockDb.fiatOrder.findUnique.mockResolvedValue(order)
+    // 1% short — within the 2% default tolerance.
+    mockDb.transaction.findUnique.mockResolvedValue({
+      id: 'tx-1',
+      txHash: '0xabc',
+      status: 'CONFIRMED',
+      userId: 'user-1',
+      amount: 99,
+    })
+    mockDb.fiatOrder.update.mockImplementation(({ data }: any) => ({
+      ...baseOrder(),
+      ...data,
+    }))
+
+    await reconcileSingleOrder('order-1', '0xabc')
+
+    expect(mockDispatch).not.toHaveBeenCalledWith(
+      'fiat.order.rate_mismatch',
+      expect.anything()
+    )
+  })
+
+  it('still alerts on over-delivery (credited, not capped) for audit visibility', async () => {
+    const order = baseOrder({
+      status: 'PROCESSING',
+      fiatAmount: 100,
+      cryptoAmount: 100,
+      quotedCryptoAmount: 100,
+    })
+    mockDb.fiatOrder.findUnique.mockResolvedValue(order)
+    // 15% more than quoted.
+    mockDb.transaction.findUnique.mockResolvedValue({
+      id: 'tx-1',
+      txHash: '0xabc',
+      status: 'CONFIRMED',
+      userId: 'user-1',
+      amount: 115,
+    })
+    mockDb.fiatOrder.update.mockImplementation(({ data }: any) => ({
+      ...baseOrder(),
+      ...data,
+    }))
+
+    await reconcileSingleOrder('order-1', '0xabc')
+
+    const updateArg = mockDb.fiatOrder.update.mock.calls[0][0]
+    // The original quoted cryptoAmount promised to the user is never reduced,
+    // but the realized (better) amount is still captured for audit visibility.
+    expect(updateArg.data.cryptoAmount).toBe(100)
+    expect(updateArg.data.settledCryptoAmount).toBe(115)
+    expect(mockDispatch).toHaveBeenCalledWith(
+      'fiat.order.rate_mismatch',
+      expect.objectContaining({ driftPct: expect.any(Number) })
+    )
+  })
+})
+
 describe('reconcileFiatOrders', () => {
   it('settles PROCESSING orders that now have a confirmed on-chain match', async () => {
     mockDb.fiatOrder.findMany.mockResolvedValue([
@@ -307,6 +412,55 @@ describe('reconcileFiatOrders', () => {
       }),
       expect.stringContaining('fiat:stuck:')
     )
+  })
+
+  it('does not cross-link two providers concurrent orders for the same user + asset (#313)', async () => {
+    // Same user, same asset, two different providers, both PROCESSING with
+    // different quoted crypto amounts. Only one on-chain confirmed
+    // transaction exists, matching order A's quote — order B must NOT be
+    // settled against it even though the old "most recent unlinked" heuristic
+    // would have grabbed it.
+    const orderA = baseOrder({
+      id: 'order-A',
+      provider: 'moonpay',
+      providerOrderId: 'mp_1',
+      status: 'PROCESSING',
+      quotedCryptoAmount: 100,
+    })
+    const orderB = baseOrder({
+      id: 'order-B',
+      provider: 'sandbox',
+      providerOrderId: 'sb_1',
+      status: 'PROCESSING',
+      quotedCryptoAmount: 50,
+    })
+    mockDb.fiatOrder.findMany.mockResolvedValue([orderA, orderB])
+
+    const tx = {
+      id: 'tx-1',
+      txHash: '0xabc',
+      status: 'CONFIRMED',
+      userId: 'user-1',
+      amount: 100, // matches order A within tolerance; way off from order B
+    }
+    mockDb.transaction.findMany.mockResolvedValue([tx])
+    mockDb.fiatOrder.findUnique.mockImplementation(({ where }: any) =>
+      where.id === 'order-A' ? orderA : orderB
+    )
+    mockDb.transaction.findUnique.mockResolvedValue(tx)
+    mockDb.fiatOrder.update.mockImplementation(({ where, data }: any) => ({
+      id: where.id,
+      ...data,
+    }))
+
+    const res = await reconcileFiatOrders()
+
+    expect(res.settled).toBe(1)
+    const settleCalls = mockDb.fiatOrder.update.mock.calls.filter(
+      (c: any) => c[0].data.status === 'SETTLED'
+    )
+    expect(settleCalls).toHaveLength(1)
+    expect(settleCalls[0][0].where.id).toBe('order-A')
   })
 })
 
