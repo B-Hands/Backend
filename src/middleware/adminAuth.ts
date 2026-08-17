@@ -26,6 +26,8 @@ export const ADMIN_SCOPES = [
   'backfill:write',
   'keys:read',
   'keys:write',
+  'fiat:read',
+  'fiat:write',
   'super',
 ] as const
 export type AdminScope = (typeof ADMIN_SCOPES)[number]

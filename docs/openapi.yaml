@@ -2747,16 +2747,76 @@ paths:
         '502':
           description: Provider unavailable or returned an error
 
+  /api/v1/fiat/quotes:
+    get:
+      tags: [fiat]
+      operationId: getBestExecutionFiatQuotes
+      summary: Get best-execution quotes across all healthy providers
+      description: >
+        Queries every healthy fiat provider in parallel (per-provider timeout;
+        one slow/unavailable provider never blocks the others) and returns a
+        ranked list plus the single best executable quote. Each quote carries
+        a structured fee breakdown — or `fees: null` with `unpriced: true`
+        when a provider cannot itemize its fee, never an assumed zero — and a
+        `quoteId` that can be passed to `POST /fiat/orders` to lock in that
+        exact rate for a bounded validity window (`expiresAt`). Providers that
+        errored or timed out are reported in `excluded` with a reason rather
+        than silently dropped.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: direction
+          required: true
+          schema:
+            $ref: '#/components/schemas/FiatDirection'
+        - in: query
+          name: fiatAmount
+          required: true
+          schema:
+            type: number
+            minimum: 0
+        - in: query
+          name: fiatCurrency
+          required: true
+          schema:
+            type: string
+            description: 3-letter ISO 4217 currency code
+        - in: query
+          name: assetSymbol
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Ranked quotes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BestExecutionQuoteResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: >
+            No healthy fiat providers are available. Response body includes
+            `code: "no_healthy_providers"` and a per-provider failure reason.
+
   /api/v1/fiat/orders:
     post:
       tags: [fiat]
       operationId: createFiatOrder
       summary: Create a fiat order
       description: >
-        Creates an on-ramp or off-ramp order with the active provider and
-        returns the order along with a provider checkout URL (and KYC URL if
-        the provider requires identity verification). The order settles only
-        after the on-chain crypto leg is independently confirmed.
+        Creates an on-ramp or off-ramp order and returns the order along with
+        a provider checkout URL (and KYC URL if the provider requires identity
+        verification). The order settles only after the on-chain crypto leg is
+        independently confirmed. The provider is resolved, in order of
+        precedence, from a locked `quoteId` (see `GET /fiat/quotes`), an
+        explicit `provider` preference, or the registry's default selection
+        policy — and is pinned to the order permanently: failover only ever
+        affects which provider a *new* order goes to.
       security:
         - BearerAuth: []
       requestBody:
@@ -2776,8 +2836,20 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: quoteId does not reference a quote owned by the caller
+        '409':
+          description: >
+            `code: "quote_expired"` (locked quote's validity window has
+            passed — request a fresh quote), `code: "quote_already_used"`, or
+            `code: "quote_mismatch"` (order parameters don't match the locked
+            quote).
         '502':
           description: Provider unavailable or returned an error
+        '503':
+          description: >
+            No healthy fiat providers are available (`code:
+            "no_healthy_providers"`)
     get:
       tags: [fiat]
       operationId: listFiatOrders
@@ -4019,6 +4091,24 @@ components:
         assetSymbol:
           type: string
           example: USDC
+    FeeBreakdown:
+      type: object
+      nullable: true
+      description: >
+        Structured fee breakdown in fiatCurrency. Any component the provider
+        does not report is `null` — never assumed to be zero. The whole object
+        is `null` when the provider cannot itemize its fee at all (see
+        `FiatQuote.unpriced`).
+      properties:
+        providerFee:
+          type: number
+          nullable: true
+        networkFee:
+          type: number
+          nullable: true
+        fxSpread:
+          type: number
+          nullable: true
     FiatQuote:
       type: object
       properties:
@@ -4038,16 +4128,67 @@ components:
           example: USDC
         feeAmount:
           type: number
+          description: Deprecated — sum of fee components when known. Prefer `fees`.
           example: 1.5
-        exchangeRate:
+        rate:
           type: number
+          description: Exchange rate used (crypto units per 1 fiat unit).
           example: 1.0
+        rateSource:
+          type: string
+          enum: [PROVIDER, FX_FEED]
+          description: Where the exchange rate came from — never silently assumed.
+        fees:
+          $ref: '#/components/schemas/FeeBreakdown'
+        unpriced:
+          type: boolean
+          description: True when `fees` is null because the provider gave no breakdown.
+        requiresKyc:
+          type: boolean
+          description: True when this provider requires additional KYC for this pair.
+        providerQuoteId:
+          type: string
+          nullable: true
         provider:
           type: string
           example: moonpay
         expiresAt:
           type: string
           format: date-time
+    ExcludedProviderQuote:
+      type: object
+      properties:
+        provider:
+          type: string
+        reason:
+          type: string
+          description: Why this provider's quote could not be included (timeout, error, unsupported pair).
+    RankedQuote:
+      allOf:
+        - $ref: '#/components/schemas/FiatQuote'
+        - type: object
+          properties:
+            quoteId:
+              type: string
+              format: uuid
+              description: Pass as `quoteId` to POST /fiat/orders to lock this exact rate.
+            rank:
+              type: integer
+              description: 1 = best executable price among the providers that responded.
+    BestExecutionQuoteResult:
+      type: object
+      properties:
+        best:
+          $ref: '#/components/schemas/RankedQuote'
+          description: The best executable quote, or omitted/null when every provider failed.
+        quotes:
+          type: array
+          items:
+            $ref: '#/components/schemas/RankedQuote'
+        excluded:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExcludedProviderQuote'
     CreateFiatOrderRequest:
       type: object
       required: [userId, direction, fiatAmount, fiatCurrency, assetSymbol]
@@ -4067,6 +4208,19 @@ components:
         assetSymbol:
           type: string
           example: USDC
+        provider:
+          type: string
+          description: >
+            Preferred provider key. Ignored when `quoteId` is set (the quote
+            already pins a provider). Falls back to the registry's default
+            selection policy if the preferred provider is unhealthy.
+          example: moonpay
+        quoteId:
+          type: string
+          format: uuid
+          description: >
+            A `quoteId` from `GET /fiat/quotes` to lock in that exact rate.
+            Rejected with `quote_expired` past its validity window.
     FiatOrder:
       type: object
       properties:
@@ -4116,6 +4270,35 @@ components:
           type: string
           format: date-time
           nullable: true
+        quoteRate:
+          type: number
+          nullable: true
+          description: Exchange rate captured from the quote at order-creation time.
+        quotedCryptoAmount:
+          type: number
+          nullable: true
+          description: Crypto amount promised by the quote at order-creation time.
+        fees:
+          $ref: '#/components/schemas/FeeBreakdown'
+        providerQuoteId:
+          type: string
+          nullable: true
+        rateLockExpiresAt:
+          type: string
+          format: date-time
+          nullable: true
+        settledRate:
+          type: number
+          nullable: true
+          description: Exchange rate realized at on-chain settlement.
+        settledCryptoAmount:
+          type: number
+          nullable: true
+          description: >
+            Crypto amount actually confirmed on-chain. Compare against
+            `quotedCryptoAmount` for the quoted-vs-settled delta; drift beyond
+            tolerance triggers an operational alert and a
+            `fiat.order.rate_mismatch` webhook.
         createdAt:
           type: string
           format: date-time

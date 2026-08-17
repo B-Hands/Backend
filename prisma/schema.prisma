@@ -172,6 +172,7 @@ model User {
   agentLogs             AgentLog[]
   webhookSubscriptions  WebhookSubscription[]
   fiatOrders            FiatOrder[]
+  fiatQuoteLocks        FiatQuoteLock[]
   referralCode          ReferralCode?
   referralConversion    ReferralConversion?
   recurringDepositPlans RecurringDepositPlan[]
@@ -604,6 +605,18 @@ model FiatOrder {
   kycUrl          String? // provider KYC next-step link, surfaced to the user when required
   failureReason   String? // populated on FAILED/REFUNDED for operator/user visibility
   settledAt       DateTime?
+  // Best-execution / rate-drift protection (#313). quoteRate/quotedCryptoAmount
+  // and fees are captured from the locked quote at order-creation time so
+  // cryptoAmount is never an unexplained number; settledRate/settledCryptoAmount
+  // are populated at on-chain settlement so the quoted-vs-settled delta is
+  // always inspectable on the order itself.
+  quoteRate            Decimal?   @db.Decimal(36, 18)
+  quotedCryptoAmount   Decimal?   @db.Decimal(36, 18)
+  fees                 Json?      // structured FeeBreakdown; null means the provider could not price it (unpriced, never assumed 0)
+  providerQuoteId      String?
+  rateLockExpiresAt    DateTime?
+  settledRate          Decimal?   @db.Decimal(36, 18)
+  settledCryptoAmount  Decimal?   @db.Decimal(36, 18)
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
 
@@ -616,6 +629,34 @@ model FiatOrder {
   @@index([status])
   @@index([createdAt])
   @@map("fiat_orders")
+}
+
+/// A time-boxed, provider-pinned quote returned by the best-execution quote
+/// flow (#313). Order creation may reference a lock's id (`quoteId`) instead of
+/// re-quoting; the lock is consumed exactly once and rejected past `expiresAt`
+/// with `quote_expired` so a stale rate is never silently honored.
+model FiatQuoteLock {
+  id              String        @id @default(uuid())
+  userId          String
+  provider        String
+  direction       FiatDirection
+  fiatAmount      Decimal       @db.Decimal(36, 18)
+  fiatCurrency    String
+  assetSymbol     String
+  cryptoAmount    Decimal       @db.Decimal(36, 18)
+  rate            Decimal?      @db.Decimal(36, 18)
+  fees            Json?
+  providerQuoteId String?
+  expiresAt       DateTime
+  consumedAt      DateTime?
+  createdAt       DateTime      @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@index([provider])
+  @@map("fiat_quote_locks")
 }
 
 /// A user's own single-level referral code (#growth). One code per user; the
