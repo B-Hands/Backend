@@ -62,6 +62,7 @@ beforeEach(() => {
   mockDb.transaction = {
     findUnique: jest.fn(),
     findFirst: jest.fn(),
+    findMany: jest.fn().mockResolvedValue([]),
   }
 })
 
@@ -257,13 +258,15 @@ describe('reconcileFiatOrders', () => {
     mockDb.fiatOrder.findMany.mockResolvedValue([
       baseOrder({ status: 'PROCESSING' }),
     ])
-    mockDb.transaction.findFirst.mockResolvedValue({
-      id: 'tx-1',
-      txHash: '0xabc',
-      status: 'CONFIRMED',
-      userId: 'user-1',
-      amount: 100,
-    })
+    mockDb.transaction.findMany.mockResolvedValue([
+      {
+        id: 'tx-1',
+        txHash: '0xabc',
+        status: 'CONFIRMED',
+        userId: 'user-1',
+        amount: 100,
+      },
+    ])
     // reconcileSingleOrder re-reads the order + tx.
     mockDb.fiatOrder.findUnique.mockResolvedValue(
       baseOrder({ status: 'PROCESSING' })
@@ -292,7 +295,7 @@ describe('reconcileFiatOrders', () => {
       createdAt: new Date(Date.now() - STALE_ORDER_MAX_AGE_MS - 1000),
     })
     mockDb.fiatOrder.findMany.mockResolvedValue([stale])
-    mockDb.transaction.findFirst.mockResolvedValue(null)
+    mockDb.transaction.findMany.mockResolvedValue([])
 
     const res = await reconcileFiatOrders()
 

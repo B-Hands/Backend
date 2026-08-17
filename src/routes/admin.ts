@@ -14,6 +14,7 @@ import { getEventMetrics } from '../stellar/events'
 import { DeadLetterQueue } from '../stellar/dlq'
 import { logger } from '../utils/logger'
 import { requireAdminAuth, requireAdminScope } from '../middleware/adminAuth'
+import { getAllProviderHealth, adminSetProviderCircuit } from '../fiat/registry'
 import db from '../db'
 
 const router = Router()
@@ -836,6 +837,75 @@ router.get(
       res
         .status(500)
         .json({ success: false, error: 'Failed to get rotation status' })
+    }
+  }
+)
+
+/**
+ * GET /api/admin/fiat/providers
+ * Reports per-provider health (circuit state, success/failure counts) for
+ * every registered fiat ramp provider (#313).
+ * Required scope: fiat:read
+ */
+router.get(
+  '/fiat/providers',
+  requireAdminScope('fiat:read'),
+  (req: Request, res: Response) => {
+    try {
+      const providers = getAllProviderHealth()
+      auditLog(req, res, 'GET_FIAT_PROVIDER_HEALTH', 'success')
+      res.status(200).json({ success: true, data: { providers } })
+    } catch (error) {
+      logger.error('[Admin] Failed to get fiat provider health', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      auditLog(req, res, 'GET_FIAT_PROVIDER_HEALTH', 'failure', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+      res
+        .status(500)
+        .json({ success: false, error: 'Failed to get fiat provider health' })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/fiat/providers/:name/failover
+ * Manually force a fiat provider's circuit open (stop routing new
+ * quotes/orders to it) or closed (resume routing). Bypasses the automatic
+ * failure-count threshold so operators can react ahead of it (#313).
+ * Body: { "state": "open" | "closed" }
+ * Required scope: fiat:write
+ */
+router.post(
+  '/fiat/providers/:name/failover',
+  requireAdminScope('fiat:write'),
+  (req: Request, res: Response) => {
+    const { name } = req.params
+    const { state } = req.body ?? {}
+
+    if (state !== 'open' && state !== 'closed') {
+      return res.status(400).json({
+        success: false,
+        error: 'Body must include state: "open" | "closed"',
+      })
+    }
+
+    try {
+      const health = adminSetProviderCircuit(name, state)
+      auditLog(req, res, 'FIAT_PROVIDER_FAILOVER', 'success', {
+        provider: name,
+        state,
+      })
+      res.status(200).json({ success: true, data: health })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'FIAT_PROVIDER_FAILOVER', 'failure', {
+        provider: name,
+        state,
+        error: message,
+      })
+      res.status(404).json({ success: false, error: message })
     }
   }
 )

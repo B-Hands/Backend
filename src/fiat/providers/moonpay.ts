@@ -131,7 +131,20 @@ export class MoonPayProvider implements FiatRampProvider {
       data.quoteCurrencyAmount ?? data.cryptoAmount ?? 0
     )
     const feeAmount = Number(data.feeAmount ?? 0) || undefined
+    const networkFeeAmount = Number(data.networkFeeAmount ?? 0) || undefined
     const rate = Number(data.exchangeRate ?? data.rate ?? 0) || undefined
+
+    // MoonPay reports a total fee but doesn't itemize FX spread. We only
+    // populate the fields it actually gives us — never assume a zero for the
+    // rest — and label the quote unpriced when it gives us nothing at all.
+    const hasFeeData = feeAmount !== undefined || networkFeeAmount !== undefined
+    const fees = hasFeeData
+      ? {
+          providerFee: feeAmount ?? null,
+          networkFee: networkFeeAmount ?? null,
+          fxSpread: null,
+        }
+      : null
 
     return {
       provider: this.name,
@@ -142,6 +155,9 @@ export class MoonPayProvider implements FiatRampProvider {
       cryptoAmount,
       feeAmount,
       rate,
+      rateSource: 'PROVIDER',
+      fees,
+      unpriced: fees === null,
     }
   }
 

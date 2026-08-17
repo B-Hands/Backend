@@ -1,7 +1,8 @@
 /**
- * Fiat on-ramp / off-ramp routes (#290).
+ * Fiat on-ramp / off-ramp routes (#290, extended #313).
  *
- *   POST /api/fiat/quote            — auth; get a buy/sell quote
+ *   POST /api/fiat/quote            — auth; single default-provider quote (legacy)
+ *   GET  /api/fiat/quotes           — auth; best-execution: ranked, parallel, multi-provider
  *   POST /api/fiat/orders           — auth; create an order, returns checkout URL
  *   GET  /api/fiat/orders           — auth; caller's order history
  *   GET  /api/fiat/orders/:id       — auth; single order (owner-scoped)
@@ -19,19 +20,45 @@ import { logger } from '../utils/logger'
 import { sendError } from '../utils/errors'
 import {
   fiatQuoteSchema,
+  bestExecutionQuoteQuerySchema,
   createFiatOrderSchema,
 } from '../validators/fiat-validators'
 import {
   getFiatQuote,
+  getBestExecutionQuote,
   createFiatOrder,
   processProviderWebhook,
 } from '../fiat/service'
 import { getProvider } from '../fiat/registry'
+import { NoHealthyProvidersError, FiatOrderError } from '../fiat/types'
 import db from '../db'
 
 const router = Router()
 
-// ── Quote ─────────────────────────────────────────────────────────────────────
+function respondToFiatError(
+  res: Response,
+  err: unknown,
+  fallbackMessage: string
+) {
+  if (err instanceof NoHealthyProvidersError) {
+    return sendError(res, 503, 'No healthy fiat providers are available', {
+      code: err.code,
+      failures: err.failures,
+    })
+  }
+  if (err instanceof FiatOrderError) {
+    return sendError(res, err.status, err.message, {
+      code: err.code,
+      ...err.details,
+    })
+  }
+  logger.error(`[Fiat] ${fallbackMessage}`, {
+    error: err instanceof Error ? err.message : String(err),
+  })
+  return sendError(res, 502, fallbackMessage)
+}
+
+// ── Quote (legacy: single default-provider quote) ──────────────────────────
 router.post(
   '/quote',
   requireAuth,
@@ -41,10 +68,32 @@ router.post(
       const quote = await getFiatQuote(req.body)
       return res.json(quote)
     } catch (err) {
-      logger.error('[Fiat] Quote failed', {
-        error: err instanceof Error ? err.message : String(err),
-      })
-      return sendError(res, 502, 'Failed to fetch quote from provider')
+      return respondToFiatError(res, err, 'Failed to fetch quote from provider')
+    }
+  }
+)
+
+// ── Best-execution quote: ranked, parallel, multi-provider (#313) ──────────
+router.get(
+  '/quotes',
+  requireAuth,
+  validate({
+    query: bestExecutionQuoteQuerySchema,
+    errorMessage: 'Validation error',
+  }),
+  async (req: Request, res: Response) => {
+    const userId = req.userId
+    if (!userId) return sendError(res, 401, 'Unauthorized')
+
+    try {
+      const result = await getBestExecutionQuote(req.query as any, { userId })
+      return res.json(result)
+    } catch (err) {
+      return respondToFiatError(
+        res,
+        err,
+        'Failed to fetch quotes from providers'
+      )
     }
   }
 )
@@ -65,10 +114,11 @@ router.post(
       const order = await createFiatOrder(req.body, { walletAddress })
       return res.status(201).json(order)
     } catch (err) {
-      logger.error('[Fiat] Order creation failed', {
-        error: err instanceof Error ? err.message : String(err),
-      })
-      return sendError(res, 502, 'Failed to create order with provider')
+      return respondToFiatError(
+        res,
+        err,
+        'Failed to create order with provider'
+      )
     }
   }
 )
