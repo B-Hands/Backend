@@ -187,6 +187,27 @@ export const webhookRateLimiter = buildRateLimiter({
 })
 
 /**
+ * Optimizer rate limiter (#322) — for the CPU-bound allocation-suggestion
+ * endpoint. Defaults: 5 req / 1 min (env: OPTIMIZER_RATE_LIMIT_MAX /
+ * OPTIMIZER_RATE_LIMIT_WINDOW_MS).
+ *
+ * Applied PER ENDPOINT rather than through the `apiRoutes` handlers array. The
+ * table convention is right for a resource whose routes are uniformly costly,
+ * but /portfolio is mostly cheap reads that must not inherit a 5/min budget
+ * because one POST on the same router is expensive. This is not the
+ * double-application the warning in src/routes/admin.ts guards against — no
+ * table-level limiter is applied to this route.
+ */
+export const optimizerRateLimiter = buildRateLimiter({
+  windowMs: config.security.optimizerRateLimit.windowMs,
+  max: config.security.optimizerRateLimit.max,
+  skip: isTrusted,
+  limiterType: 'optimizer',
+  message:
+    'Too many optimization requests. Portfolio optimization is compute-intensive; please try again shortly.',
+})
+
+/**
  * Internal / agent rate limiter — higher throughput for service-to-service calls.
  * Defaults: 500 req / 1 min (env: INTERNAL_RATE_LIMIT_MAX / INTERNAL_RATE_LIMIT_WINDOW_MS).
  */

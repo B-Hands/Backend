@@ -438,6 +438,128 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/v1/portfolio/{userId}/suggest-allocation:
+    post:
+      tags: [portfolio]
+      operationId: suggestAllocation
+      summary: Suggest an optimal allocation
+      description: |
+        Computes a mean-variance optimal allocation from historical ProtocolRate
+        data, the user's risk tolerance, and their effective risk ceiling, and
+        returns it together with an efficient frontier and a backtest comparison.
+
+        **This endpoint is ADVISORY and never changes anything.** It does not
+        write `User.strategyConfig`, does not move funds, and does not alter what
+        the rebalancing agent will do. Applying a suggestion is a separate,
+        explicit call to the strategy update endpoint. Every response carries
+        `isSuggestion: true` and a `disclaimer`.
+
+        **What the optimization actually minimizes.** `ProtocolRate` is a
+        yield-quote series, not a price series, so the covariance measures how
+        protocols' quoted APYs co-move. The optimizer minimizes YIELD volatility.
+        It does NOT model principal loss, depeg, or smart-contract failure —
+        those enter only through `ProtocolRiskScore`, which filters the universe.
+
+        **Cost controls.** Compute-intensive, so this route carries its own
+        stricter rate limiter (default 5/min) plus an in-flight concurrency bound
+        of one optimization per user. Both return `429`.
+
+        See `docs/PORTFOLIO_OPTIMIZATION.md` for the objective, the risk-aversion
+        mapping, and the estimation method.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: User ID (UUID v4). Must be the authenticated user.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SuggestAllocationRequest'
+            example:
+              lookbackDays: 90
+              frontierPoints: 12
+              includeBacktest: true
+      responses:
+        '200':
+          description: |
+            An allocation suggestion. Note that a `status` other than `ok` is
+            still a 200 — "the optimizer ran and could not produce a portfolio"
+            is a result, not a request error, and the payload names the reason.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AllocationSuggestionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          description: |
+            Rate limit exceeded, or an optimization is already in flight for this
+            user. Carries `Retry-After`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: An optimization is already running for this account. Please wait for it to finish.
+
+  /api/v1/portfolio/{userId}/suggestions:
+    get:
+      tags: [portfolio]
+      operationId: listAllocationSuggestions
+      summary: List stored allocation suggestions
+      description: |
+        Paginated history of previously computed suggestions, newest first.
+        Rows written by the scheduled precompute job carry a null `backtest`;
+        that is expected, not a failure — the backtest legs are only computed
+        for interactive requests.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: User ID (UUID v4). Must be the authenticated user.
+        - in: query
+          name: page
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        '200':
+          description: Stored suggestions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AllocationSuggestionListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /api/v1/portfolio/{userId}/history:
     get:
       tags: [portfolio]
@@ -4558,6 +4680,254 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/AlertRule'
+
+    # ── Portfolio optimization (#322) ─────────────────────────────────────
+    SuggestAllocationRequest:
+      type: object
+      additionalProperties: false
+      description: |
+        All fields optional; an empty body requests a suggestion with defaults.
+        Unknown fields are rejected rather than ignored, so a typo cannot
+        silently produce an answer computed over the wrong window.
+      properties:
+        lookbackDays:
+          type: integer
+          minimum: 14
+          maximum: 365
+          default: 90
+          description: Trailing window the statistics are estimated over.
+        frontierPoints:
+          type: integer
+          minimum: 2
+          maximum: 25
+          default: 12
+          description: Efficient-frontier resolution. Each point is a full solve.
+        includeBacktest:
+          type: boolean
+          default: true
+          description: Set false to skip the suggested-vs-current backtest legs.
+
+    FrontierPoint:
+      type: object
+      required: [lambda, risk, return, weights]
+      properties:
+        lambda:
+          type: number
+          description: Risk-aversion coefficient this point was solved at.
+        risk:
+          type: number
+          description: Annualized yield volatility, as a decimal fraction (0.014 = 1.4pp).
+        return:
+          type: number
+          description: Annualized expected return, as a decimal fraction (0.082 = 8.2%).
+        weights:
+          type: object
+          additionalProperties:
+            type: number
+          description: Decimal-fraction weights (0.425 = 42.5%), keyed by protocol.
+
+    UniverseExclusion:
+      type: object
+      required: [protocol, reason]
+      description: Why a protocol was not eligible for optimization.
+      properties:
+        protocol:
+          type: string
+        reason:
+          type: string
+          enum:
+            - insufficient_history
+            - risk_ceiling
+            - no_risk_score
+            - no_rate_history
+            - insufficient_aligned_history
+        detail:
+          type: string
+
+    BacktestLeg:
+      type: object
+      required: [finalValue, realizedApy, maxDrawdownPercent, rebalanceCount, finalProtocol]
+      properties:
+        finalValue:
+          type: number
+        realizedApy:
+          type: number
+        maxDrawdownPercent:
+          type: number
+        rebalanceCount:
+          type: integer
+        finalProtocol:
+          type: string
+
+    BacktestComparison:
+      type: object
+      required: [suggested, current, startDate, endDate, startingAmount, caveat]
+      properties:
+        suggested:
+          $ref: '#/components/schemas/BacktestLeg'
+        current:
+          type: object
+          allOf:
+            - $ref: '#/components/schemas/BacktestLeg'
+          nullable: true
+          description: Null when the user has no current allocation to compare against.
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+        startingAmount:
+          type: number
+        caveat:
+          type: string
+          description: |
+            States that the agent holds ONE protocol at a time, so this compares
+            what the agent would have done under each configuration — it is not a
+            simulation of holding the weighted basket.
+
+    AllocationSuggestionResponse:
+      type: object
+      required:
+        - isSuggestion
+        - disclaimer
+        - userId
+        - inputHash
+        - status
+        - weights
+        - riskTolerance
+        - computedAt
+      properties:
+        isSuggestion:
+          type: boolean
+          enum: [true]
+          description: Always true. This response is advice, never an applied change.
+        disclaimer:
+          type: string
+        userId:
+          type: string
+          format: uuid
+        id:
+          type: string
+          format: uuid
+          description: Set when the suggestion was persisted.
+        inputHash:
+          type: string
+          description: |
+            'sha256:'-prefixed hash of the canonical input snapshot. Equal hashes
+            mean equal weights, which is what makes "did my recommendation change
+            or only my inputs?" answerable.
+        status:
+          type: string
+          enum: [ok, infeasible, insufficient_universe, non_converged]
+        weights:
+          type: object
+          additionalProperties:
+            type: number
+          description: |
+            PERCENTAGES summing to 100 +/- 0.01 — directly acceptable by the
+            strategy update endpoint. Empty for a non-ok status.
+        outcome:
+          type: object
+          description: |
+            The full discriminated outcome. For `ok` it carries expectedReturn,
+            expectedVolatility, lambda, frontier, iterations and
+            portfolioRiskScore; for the failure statuses it names the binding
+            constraint or the exclusions.
+        riskTolerance:
+          type: integer
+        effectiveRiskCeiling:
+          type: integer
+          nullable: true
+        ceilingSource:
+          type: string
+          enum: [goal, follow, own, none]
+          description: Which layer supplied the effective ceiling.
+        currentAllocations:
+          type: object
+          additionalProperties:
+            type: number
+          nullable: true
+        excluded:
+          type: array
+          items:
+            $ref: '#/components/schemas/UniverseExclusion'
+        observationCount:
+          type: integer
+          description: Days on which every eligible protocol had a value.
+        lookbackDays:
+          type: integer
+        backtest:
+          type: object
+          allOf:
+            - $ref: '#/components/schemas/BacktestComparison'
+          nullable: true
+        computedAt:
+          type: string
+          format: date-time
+
+    StoredAllocationSuggestion:
+      type: object
+      required: [id, isSuggestion, status, inputHash, weights, riskTolerance, computedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        isSuggestion:
+          type: boolean
+          enum: [true]
+        status:
+          type: string
+          enum: [ok, infeasible, insufficient_universe, non_converged]
+        inputHash:
+          type: string
+        weights:
+          type: object
+          additionalProperties:
+            type: number
+        frontier:
+          type: array
+          items:
+            $ref: '#/components/schemas/FrontierPoint'
+        backtest:
+          type: object
+          allOf:
+            - $ref: '#/components/schemas/BacktestComparison'
+          nullable: true
+          description: Null for rows written by the scheduled precompute job.
+        riskTolerance:
+          type: integer
+        effectiveRiskCeiling:
+          type: integer
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+          description: Human-readable explanation for a non-ok status.
+        computedAt:
+          type: string
+          format: date-time
+
+    AllocationSuggestionListResponse:
+      type: object
+      required: [userId, isSuggestion, page, limit, total, suggestions]
+      properties:
+        userId:
+          type: string
+          format: uuid
+        isSuggestion:
+          type: boolean
+          enum: [true]
+        page:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+        suggestions:
+          type: array
+          items:
+            $ref: '#/components/schemas/StoredAllocationSuggestion'
 
   responses:
     Unauthorized:

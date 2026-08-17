@@ -10,6 +10,7 @@
 - **[API_REFERENCE.md](API_REFERENCE.md)** - Complete backend endpoint reference
 - **[TAX_REPORT.md](TAX_REPORT.md)** - Tax reporting & FIFO cost-basis lot tracking (#284)
 - **[STRATEGY_MARKETPLACE.md](STRATEGY_MARKETPLACE.md)** - Strategy marketplace / opt-in copy-trading: metric formula, eligibility gate, privacy & custody boundaries (#285)
+- **[PORTFOLIO_OPTIMIZATION.md](PORTFOLIO_OPTIMIZATION.md)** - Portfolio optimization & allocation suggestions: objective, λ mapping, estimation method, advisory invariant, limitations (#322)
 
 ### For DevOps/Deployment
 

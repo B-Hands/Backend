@@ -51,6 +51,14 @@ import { scheduleReferralPayout } from './jobs/referralPayout'
 import { scheduleRecurringDeposits } from './jobs/recurringDeposits'
 import { scheduleAlertRules } from './jobs/alertRules'
 import { scheduleStrategyMetrics } from './jobs/strategyMetrics'
+import { scheduleAllocationSuggestions } from './jobs/allocationSuggestions'
+// Was never imported or started, so ProtocolRiskScore rows were never refreshed
+// after their first backfill. That matters beyond staleness: risk-ceiling
+// filtering is fail-closed (applyRiskCeiling treats an unknown score as
+// ineligible), so an empty or stale table makes every ceiling-constrained
+// allocation suggestion — and every ceiling-constrained rebalance — return
+// nothing eligible. Wired up here (#322).
+import { scheduleProtocolRiskScoring } from './jobs/protocolRiskScoring'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { validateStellarNetworkReady } from './config/readiness'
 import healthRouter from './routes/health'
@@ -107,6 +115,8 @@ let referralPayoutHandle: NodeJS.Timeout | null = null
 let recurringDepositsHandle: NodeJS.Timeout | null = null
 let alertRulesHandle: NodeJS.Timeout | null = null
 let strategyMetricsHandle: NodeJS.Timeout | null = null
+let allocationSuggestionsHandle: NodeJS.Timeout | null = null
+let protocolRiskScoringHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
@@ -369,6 +379,18 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.info('[Shutdown] Strategy metrics timer cleared')
   }
 
+  if (protocolRiskScoringHandle) {
+    clearInterval(protocolRiskScoringHandle)
+    protocolRiskScoringHandle = null
+    logger.info('[Shutdown] Protocol risk scoring timer cleared')
+  }
+
+  if (allocationSuggestionsHandle) {
+    clearInterval(allocationSuggestionsHandle)
+    allocationSuggestionsHandle = null
+    logger.info('[Shutdown] Allocation suggestions timer cleared')
+  }
+
   if (!httpServer) {
     logger.warn('[Shutdown] No HTTP server to close')
     process.exit(0)
@@ -527,6 +549,10 @@ async function main(): Promise<void> {
   recurringDepositsHandle = scheduleRecurringDeposits()
   alertRulesHandle = scheduleAlertRules()
   strategyMetricsHandle = scheduleStrategyMetrics()
+  // Ordered before the suggestion job so the first suggestion run sees freshly
+  // scored protocols rather than whatever was last left in the table.
+  protocolRiskScoringHandle = scheduleProtocolRiskScoring()
+  allocationSuggestionsHandle = scheduleAllocationSuggestions()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────

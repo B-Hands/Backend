@@ -148,23 +148,23 @@ enum SubAccountStatus {
 }
 
 model User {
-  id            String   @id @default(uuid())
-  walletAddress String   @unique
-  network       Network  @default(MAINNET)
-  displayName   String?
-  email         String?  @unique
-  avatarUrl     String?
+  id                String   @id @default(uuid())
+  walletAddress     String   @unique
+  network           Network  @default(MAINNET)
+  displayName       String?
+  email             String?  @unique
+  avatarUrl         String?
   // E.164 WhatsApp number, when known. Nullable because most users onboard via
   // wallet auth and never link a number. Used as the WhatsApp delivery
   // destination for alert rules (#289); alerts on the WHATSAPP/BOTH channel are
   // skipped (logged, not errored) for users without a number on file.
-  phone         String?  @unique
-  riskTolerance      Int      @default(5)
-  rebalanceStrategy  String?  // 'MAX_YIELD' | 'TARGET_ALLOCATION' | null (defaults to MAX_YIELD)
-  strategyConfig     Json?    // e.g. { "targetAllocations": { "Blend": 50, "Stellar DEX": 30, "Luma": 20 } }
-  isActive           Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  phone             String?  @unique
+  riskTolerance     Int      @default(5)
+  rebalanceStrategy String? // 'MAX_YIELD' | 'TARGET_ALLOCATION' | null (defaults to MAX_YIELD)
+  strategyConfig    Json? // e.g. { "targetAllocations": { "Blend": 50, "Stellar DEX": 30, "Luma": 20 } }
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   sessions              Session[]
   positions             Position[]
@@ -182,24 +182,25 @@ model User {
   savingsGoals          SavingsGoal[]
   publishedStrategy     PublishedStrategy?
   strategyFollows       StrategyFollow[]
-  parentSubAccounts     SubAccount[] @relation("ParentOf")
-  childSubAccounts      SubAccount[] @relation("ChildOf")
+  parentSubAccounts     SubAccount[]           @relation("ParentOf")
+  childSubAccounts      SubAccount[]           @relation("ChildOf")
+  allocationSuggestions AllocationSuggestion[]
 
   @@map("users")
 }
 
 model Session {
-  id            String   @id @default(uuid())
-  userId        String
-  token         String   @unique
-  walletAddress String
-  network       Network
-  expiresAt     DateTime
+  id                    String    @id @default(uuid())
+  userId                String
+  token                 String    @unique
+  walletAddress         String
+  network               Network
+  expiresAt             DateTime
   refreshTokenHash      String?
   refreshTokenExpiresAt DateTime?
-  ipAddress     String?
-  userAgent     String?
-  createdAt     DateTime @default(now())
+  ipAddress             String?
+  userAgent             String?
+  createdAt             DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -210,21 +211,21 @@ model Session {
 }
 
 model AdminApiKey {
-  id        String    @id @default(uuid())
-  name      String    @unique
-  role      String
-  scopes    String[]
-  hash      String
+  id          String    @id @default(uuid())
+  name        String    @unique
+  role        String
+  scopes      String[]
+  hash        String
   // SHA-256 of the raw token ("sha256:<hex>"). A deterministic lookup key that
   // narrows candidates before the expensive bcrypt compare against `hash`.
   // Nullable only so the migration is safe on pre-existing rows; keys without
   // one cannot be authenticated and must be re-issued.
   tokenPrefix String?
-  expiresAt DateTime?
-  revokedAt DateTime?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  lastUsedAt DateTime?
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  lastUsedAt  DateTime?
 
   auditLogs AdminAuditLog[]
 
@@ -290,7 +291,7 @@ model Position {
 model Transaction {
   id             String            @id @default(uuid())
   userId         String
-  actingAsUserId String?           // non-null when action was performed by a parent on behalf of a child
+  actingAsUserId String? // non-null when action was performed by a parent on behalf of a child
   positionId     String?
   txHash         String?           @unique
   type           TransactionType
@@ -305,9 +306,9 @@ model Transaction {
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
 
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  position Position? @relation(fields: [positionId], references: [id])
-  fiatOrders FiatOrder[]
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  position     Position?     @relation(fields: [positionId], references: [id])
+  fiatOrders   FiatOrder[]
   costBasisLot CostBasisLot?
   lotDisposals LotDisposal[]
 
@@ -391,9 +392,9 @@ model ProtocolRiskScore {
 
 model AgentLog {
   id             String      @id @default(uuid())
-  userId         String?     // null for system-level actions (scans, alerts)
-  actingAsUserId String?     // non-null when action was performed by a parent on behalf of a child
-  positionId     String?     // set when log is tied to a specific position
+  userId         String? // null for system-level actions (scans, alerts)
+  actingAsUserId String? // non-null when action was performed by a parent on behalf of a child
+  positionId     String? // set when log is tied to a specific position
   action         AgentAction
   status         AgentStatus
   reasoning      String?     @db.Text
@@ -417,22 +418,22 @@ model AgentLog {
 }
 
 model EventCursor {
-  id                   String   @id @default(uuid())
-  contractId           String   @unique
-  lastProcessedLedger  Int
-  lastProcessedAt      DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id                  String   @id @default(uuid())
+  contractId          String   @unique
+  lastProcessedLedger Int
+  lastProcessedAt     DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   @@map("event_cursors")
 }
 
 model ProcessedEvent {
-  id           String   @id @default(uuid())
-  contractId   String
-  txHash       String
-  eventType    String
-  ledger       Int
-  processedAt  DateTime @default(now())
+  id          String   @id @default(uuid())
+  contractId  String
+  txHash      String
+  eventType   String
+  ledger      Int
+  processedAt DateTime @default(now())
 
   @@unique([contractId, txHash, eventType, ledger])
   @@index([contractId])
@@ -443,17 +444,17 @@ model ProcessedEvent {
 }
 
 model DeadLetterEvent {
-  id          String                @id @default(uuid())
-  contractId  String
-  txHash      String
-  eventType   String
-  ledger      Int
-  error       String                @db.Text
-  payload     Json
-  status      DeadLetterEventStatus @default(PENDING)
-  retryCount  Int                   @default(0)
-  createdAt   DateTime              @default(now())
-  updatedAt   DateTime              @updatedAt
+  id         String                @id @default(uuid())
+  contractId String
+  txHash     String
+  eventType  String
+  ledger     Int
+  error      String                @db.Text
+  payload    Json
+  status     DeadLetterEventStatus @default(PENDING)
+  retryCount Int                   @default(0)
+  createdAt  DateTime              @default(now())
+  updatedAt  DateTime              @updatedAt
 
   @@index([status])
   @@index([contractId])
@@ -505,7 +506,7 @@ model WebhookSubscription {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   deliveries WebhookDelivery[]
 
   @@index([userId])
@@ -564,12 +565,12 @@ model AlertRule {
 }
 
 model SubAccount {
-  id           String                @id @default(uuid())
+  id           String                 @id @default(uuid())
   parentUserId String
   childUserId  String
   permissions  SubAccountPermission[]
-  status       SubAccountStatus      @default(ACTIVE)
-  createdAt    DateTime              @default(now())
+  status       SubAccountStatus       @default(ACTIVE)
+  createdAt    DateTime               @default(now())
   revokedAt    DateTime?
 
   parent User @relation("ParentOf", fields: [parentUserId], references: [id], onDelete: Cascade)
@@ -591,7 +592,7 @@ model SubAccount {
 model FiatOrder {
   id              String          @id @default(uuid())
   userId          String
-  provider        String          // e.g. "moonpay" — provider key, no provider-specific logic elsewhere
+  provider        String // e.g. "moonpay" — provider key, no provider-specific logic elsewhere
   providerOrderId String
   direction       FiatDirection
   fiatAmount      Decimal         @db.Decimal(36, 18)
@@ -599,10 +600,10 @@ model FiatOrder {
   cryptoAmount    Decimal?        @db.Decimal(36, 18)
   assetSymbol     String
   status          FiatOrderStatus @default(PENDING)
-  transactionId   String?         // linked once the resulting on-chain Transaction is matched
-  checkoutUrl     String?         // provider hosted checkout URL (on-ramp)
-  kycUrl          String?         // provider KYC next-step link, surfaced to the user when required
-  failureReason   String?         // populated on FAILED/REFUNDED for operator/user visibility
+  transactionId   String? // linked once the resulting on-chain Transaction is matched
+  checkoutUrl     String? // provider hosted checkout URL (on-ramp)
+  kycUrl          String? // provider KYC next-step link, surfaced to the user when required
+  failureReason   String? // populated on FAILED/REFUNDED for operator/user visibility
   settledAt       DateTime?
   // Best-execution / rate-drift protection (#313). quoteRate/quotedCryptoAmount
   // and fees are captured from the locked quote at order-creation time so
@@ -686,11 +687,11 @@ model ReferralConversion {
   referralCodeId     String
   referredUserId     String         @unique
   activatedAt        DateTime?
-  activationTxId     String?        // the confirmed deposit Transaction that satisfied activation
+  activationTxId     String? // the confirmed deposit Transaction that satisfied activation
   status             ReferralStatus @default(PENDING)
-  ownerRewardTxId    String?        // REFERRAL_REWARD Transaction paid to the referrer
-  referredRewardTxId String?        // REFERRAL_REWARD Transaction paid to the referred user
-  payoutError        String?        // last payout failure reason — kept for retriable visibility
+  ownerRewardTxId    String? // REFERRAL_REWARD Transaction paid to the referrer
+  referredRewardTxId String? // REFERRAL_REWARD Transaction paid to the referred user
+  payoutError        String? // last payout failure reason — kept for retriable visibility
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
 
@@ -759,18 +760,18 @@ model CostBasisLot {
 /// joins. Money fields snapshot values at disposal time, making the report an
 /// immutable ledger read; null money fields mean "unpriced", never zero.
 model LotDisposal {
-  id            String       @id @default(uuid())
+  id            String   @id @default(uuid())
   lotId         String
   userId        String
   assetSymbol   String
   transactionId String
-  amount        Decimal      @db.Decimal(36, 18)
-  disposalPrice Decimal?     @db.Decimal(36, 18)
-  costBasis     Decimal?     @db.Decimal(36, 18)
-  proceeds      Decimal?     @db.Decimal(36, 18)
-  realizedGain  Decimal?     @db.Decimal(36, 18)
+  amount        Decimal  @db.Decimal(36, 18)
+  disposalPrice Decimal? @db.Decimal(36, 18)
+  costBasis     Decimal? @db.Decimal(36, 18)
+  proceeds      Decimal? @db.Decimal(36, 18)
+  realizedGain  Decimal? @db.Decimal(36, 18)
   disposedAt    DateTime
-  createdAt     DateTime     @default(now())
+  createdAt     DateTime @default(now())
 
   lot         CostBasisLot @relation(fields: [lotId], references: [id], onDelete: Cascade)
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -795,7 +796,7 @@ model SavingsGoal {
   targetAmount   Decimal    @db.Decimal(36, 18)
   startingAmount Decimal    @db.Decimal(36, 18)
   targetDate     DateTime
-  riskCeiling    Int?       // optional min protocol risk score (0-100), matches UserStrategyPreferences.riskCeiling
+  riskCeiling    Int? // optional min protocol risk score (0-100), matches UserStrategyPreferences.riskCeiling
   status         GoalStatus @default(ACTIVE)
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
@@ -907,4 +908,50 @@ model PublishedStrategyMetric {
   @@index([windowDays, isEligible, sharpe])
   @@index([windowDays, isEligible, apy])
   @@map("published_strategy_metrics")
+}
+
+/// Portfolio-optimization suggestion (#322). One row per computed suggestion.
+///
+/// ADVISORY BY CONSTRUCTION. Persisting a suggestion never changes what the
+/// agent does — `User.strategyConfig` is the only thing the agent reads, and
+/// nothing in src/analytics/ may write it (enforced by a source-scanning test in
+/// tests/unit/analytics/structural.test.ts). Applying a suggestion is a separate,
+/// deliberate call by the user through the existing, already-validated strategy
+/// update path. Rows are kept rather than replaced so a user can see how the
+/// recommendation moved as their inputs changed.
+///
+/// `weights` is Json PERCENTAGES (sum 100 +/- 0.01), not Decimal — a deliberate
+/// deviation from the issue's "use Decimal for storage". The vector's entire
+/// purpose is to round-trip into User.strategyConfig.targetAllocations, which is
+/// itself a Json map of numbers validated by publishableConfigSchema. Storing
+/// Decimal would force a lossy re-conversion at the one place the value is ever
+/// consumed. PublishedStrategyMetric already sets the Float-for-computed-
+/// analytics precedent. See docs/PORTFOLIO_OPTIMIZATION.md.
+///
+/// `inputHash` is a sha256 over the canonical input snapshot (universe, mu,
+/// Sigma, riskTolerance, effective ceiling, constraints, lookback). Equal hashes
+/// must mean equal weights — that is what makes "did my recommendation actually
+/// change, or just my inputs?" answerable, and it is asserted by a determinism
+/// test.
+model AllocationSuggestion {
+  id                   String   @id @default(uuid())
+  userId               String
+  inputHash            String
+  /// ok | infeasible | insufficient_universe | non_converged
+  status               String
+  /// { "Blend": 42.5, ... } percentages summing to 100 +/- 0.01. Empty for non-ok rows.
+  weights              Json
+  frontier             Json
+  backtestSummary      Json?
+  riskTolerance        Int
+  effectiveRiskCeiling Int?
+  /// Failure explanation / binding constraint for non-ok rows.
+  reason               String?
+  computedAt           DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, computedAt])
+  @@index([userId, inputHash])
+  @@map("allocation_suggestions")
 }

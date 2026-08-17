@@ -119,13 +119,20 @@ const HOURLY_PERIODS_PER_YEAR = MS_PER_YEAR / (60 * 60 * 1000)
  */
 const MIN_YEARS = 1 / 365
 
-function mean(values: number[]): number {
+/**
+ * Exported (rather than module-private) because src/analytics/estimation.ts
+ * builds its covariance matrix on the same convention. This module declares
+ * itself the ONE definition of risk-adjusted return math in the codebase — a
+ * second private copy of mean/stdev in the analytics package would be exactly
+ * the third definition the header warns against.
+ */
+export function mean(values: number[]): number {
   if (values.length === 0) return 0
   return values.reduce((s, v) => s + v, 0) / values.length
 }
 
 /** Sample standard deviation (n-1) — the standard Sharpe denominator. */
-function sampleStdev(values: number[]): number {
+export function sampleStdev(values: number[]): number {
   if (values.length < 2) return 0
   const m = mean(values)
   const variance =

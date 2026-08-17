@@ -392,6 +392,17 @@ export const config = {
       windowMs: parseInt(process.env.INTERNAL_RATE_LIMIT_WINDOW_MS || '60000'),
       max: parseInt(process.env.INTERNAL_RATE_LIMIT_MAX || '500'),
     },
+    /**
+     * Portfolio optimizer (#322) — the only genuinely CPU-bound endpoint in the
+     * API. Tighter than the global limiter and applied per-endpoint rather than
+     * via the apiRoutes table, which would throttle read-only portfolio traffic
+     * too. Pairs with the in-flight semaphore in src/utils/concurrency.ts: this
+     * bounds requests per window, that bounds how many run at once.
+     */
+    optimizerRateLimit: {
+      windowMs: parseInt(process.env.OPTIMIZER_RATE_LIMIT_WINDOW_MS || '60000'),
+      max: parseInt(process.env.OPTIMIZER_RATE_LIMIT_MAX || '5'),
+    },
     /** Public webhook endpoints — resist spoofed / replay floods (e.g. Twilio) */
     webhookRateLimit: {
       windowMs: parseInt(process.env.WEBHOOK_RATE_LIMIT_WINDOW_MS || '60000'),
@@ -496,6 +507,32 @@ export const config = {
      * non-zero assumption. See docs/STRATEGY_MARKETPLACE.md.
      */
     riskFreeRate: parseFloat(process.env.STRATEGY_RISK_FREE_RATE || '0'),
+  },
+  allocationSuggestions: {
+    /**
+     * Interval between precomputed allocation-suggestion refreshes in ms
+     * (default: 6 hours, matching protocolRisk and strategyMetrics). Inputs are
+     * daily APY series and a risk-score table refreshed on the same cadence, so
+     * anything faster recomputes identical numbers.
+     */
+    intervalMs: parseInt(
+      process.env.ALLOCATION_SUGGESTION_INTERVAL_MS || '21600000'
+    ),
+    /**
+     * Global cap on simultaneously-running optimizations in this process. Small
+     * on purpose: each one occupies the single event-loop thread, so this is a
+     * bound on how long an unrelated request can be stuck behind analytics
+     * work. See src/utils/concurrency.ts.
+     */
+    maxConcurrent: parseInt(
+      process.env.ALLOCATION_SUGGESTION_MAX_CONCURRENT || '2'
+    ),
+    /**
+     * Users processed per batch by the scheduled job, with a serial await per
+     * user inside a batch — same loop shape as the neighbouring jobs, so a large
+     * user table cannot monopolize the event loop in one tick.
+     */
+    batchSize: parseInt(process.env.ALLOCATION_SUGGESTION_BATCH_SIZE || '25'),
   },
   referral: {
     /**

@@ -92,3 +92,30 @@ export const mapGoalToResponse = (goal: any) => ({
   createdAt: goal.createdAt.toISOString(),
   updatedAt: goal.updatedAt.toISOString(),
 })
+
+/**
+ * Portfolio-optimization suggestion (#322), for the stored-history endpoint.
+ *
+ * Hand-written allowlist, deliberately never a spread — same discipline as the
+ * marketplace mappers above. `userId` is intentionally omitted: the caller is
+ * already scoped to their own rows by enforceUserAccess, so echoing it back adds
+ * nothing and makes it that much easier for a future refactor to leak the column
+ * into a listing that is not owner-scoped.
+ *
+ * `isSuggestion` is emitted on EVERY row. A stored allocation and an applied
+ * one look identical on the wire otherwise, and this feature's whole safety
+ * story is that they are not the same thing.
+ */
+export const mapAllocationSuggestionToResponse = (suggestion: any) => ({
+  id: suggestion.id,
+  isSuggestion: true as const,
+  status: suggestion.status,
+  inputHash: suggestion.inputHash,
+  weights: suggestion.weights,
+  frontier: suggestion.frontier,
+  backtest: suggestion.backtestSummary ?? null,
+  riskTolerance: suggestion.riskTolerance,
+  effectiveRiskCeiling: suggestion.effectiveRiskCeiling ?? null,
+  reason: suggestion.reason ?? null,
+  computedAt: suggestion.computedAt.toISOString(),
+})

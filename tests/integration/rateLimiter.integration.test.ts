@@ -18,6 +18,9 @@ jest.mock('../../src/config/env', () => ({
       adminRateLimit: { windowMs: 900000, max: 10 },
       webhookRateLimit: { windowMs: 60000, max: 30 },
       internalRateLimit: { windowMs: 60000, max: 500 },
+      // #322 — every limiter in rateLimiter.ts is constructed at module load,
+      // so a block missing here fails the whole suite at import, not at use.
+      optimizerRateLimit: { windowMs: 60000, max: 5 },
       trustedIps: [],
       internalServiceToken: '',
     },

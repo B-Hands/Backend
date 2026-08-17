@@ -61,3 +61,55 @@ riskCeiling? }`** — the three keys `src/agent/loop.ts` actually reads.
 11. **The metrics job computes for unpublished strategies too**, so re-publishing
     is ranked immediately instead of waiting up to a full interval. The
     marketplace query, not the job, applies the `isPublished` filter.
+
+## Portfolio Optimization & Allocation Suggestions (#322)
+
+12. **Σ is the covariance of ANNUAL RATE LEVELS, not of daily returns**, and λ is
+    log-spaced over `[5, 500]` rather than linear over `[1, 25]`. Both deviate
+    from the issue plan, and they are one decision, not two. Under the plan's
+    scaling (`Σ = cov(apy/100/365.25) × 365.25`) the risk term sits five to six
+    orders of magnitude below the return term for realistic APY dispersion, so
+    `(λ/2)wᵀΣw` can never offset `μᵀw` at any λ in `[1,25]`: the optimum is
+    always the max-return corner and the efficient frontier collapses to a point.
+    The chosen Σ is exactly the plan's matrix × 365.25, which also makes
+    `expectedVolatility` read in the same units as the APY. Worked numbers in
+    `docs/PORTFOLIO_OPTIMIZATION.md`.
+
+13. **A default 60% per-protocol concentration cap is applied**, raised to `1/n`
+    on a small universe. Unconstrained mean-variance is corner-seeking; measured
+    on this repo's scale, every `riskTolerance` from 3 to 10 returned a single
+    protocol at 100%. That is a true optimum of the stated objective and
+    simultaneously terrible advice for an endpoint whose purpose is to suggest a
+    *diversified* allocation. Applied as an explicit, overridable `bounds.max`
+    default rather than by distorting μ or λ until the answer looked reasonable.
+
+14. **The stable-group floor uses an exact disjoint-group split projection**,
+    not the Dykstra alternating projections the plan called for. For a convex set
+    ∩ halfspace the projection is either the plain capped-simplex projection or
+    lies on `Σ_S w = f`, which splits into two capped simplices over disjoint
+    index groups — exact and non-iterative. Dykstra is correct for a general
+    intersection but only iteratively convergent, and the first draft left the
+    iterate on the wrong side of the floor (returning 0.30 for a 0.60 floor).
+
+15. **`insufficient_universe` carries an optional `bindingConstraint`.** A
+    too-tight risk ceiling empties the universe rather than emptying the feasible
+    set, so reporting it as `infeasible` would mislabel it. The extra field lets
+    the API name `riskCeiling` as the cause while keeping the outcome
+    structurally accurate.
+
+16. **The backtest window is trimmed to the first populated day.** `runBacktest`
+    treats an empty first day as `insufficient_history` and abandons the entire
+    run, so a first observation landing minutes after the window's opening
+    midnight would discard ~89 otherwise-usable days. Trimming makes the
+    comparison depend on the data that exists rather than on when the rate
+    scanner happened to run.
+
+17. **The scheduled job stores suggestions without backtest legs.** They are two
+    full historical replays per user and are only interesting when a human is
+    looking, which is exactly when the POST endpoint computes them live. Rows
+    written by the job carry a null `backtest`; that is expected, not a failure.
+
+18. **`prisma/migrations/20260728000000_add_sub_accounts/rollback.sql` was
+    written here despite being out of scope for #322.** It was missing, which
+    fails `scripts/check-migration-rollback.sh` on `main` and would have left
+    this branch's CI red for an unrelated reason. Flagged in the PR description.
