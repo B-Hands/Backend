@@ -1,5 +1,6 @@
 /**
- * Fiat on-ramp / off-ramp service (#290).
+ * Fiat on-ramp / off-ramp service (#290, extended #313 for multi-provider
+ * best-execution and rate-drift protection).
  *
  * Design constraints baked in here:
  *
@@ -20,35 +21,258 @@
  *
  *  4. Refund/failed handling. FAILED/REFUNDED are terminal; we persist the
  *     reason for user + operator visibility and emit an outbound webhook event.
+ *
+ *  5. Best execution (#313). GET-quote callers see every healthy provider's
+ *     price in parallel, ranked. Order creation either pins a provider
+ *     directly, references a time-boxed FiatQuoteLock from that ranked list,
+ *     or falls back to the registry's selection policy — but once an order
+ *     exists it is pinned to the provider that created it forever; failover
+ *     only ever changes which provider a *new* order/quote goes to.
+ *
+ *  6. Rate-drift protection (#313). The quote captured at order creation
+ *     (quoteRate/quotedCryptoAmount/fees) and the amount actually confirmed
+ *     on-chain (settledRate/settledCryptoAmount) are both persisted, so a
+ *     worse-than-quoted settlement is never silently absorbed — drift beyond
+ *     tolerance raises an operational alert and a `fiat.order.rate_mismatch`
+ *     webhook. Over-delivery (a better-than-quoted settlement) is credited to
+ *     the user, not capped — it's still reported for audit visibility.
  */
 import db from '../db'
 import { logger } from '../utils/logger'
 import { dispatchWebhookEvent } from '../services/webhookDispatcher'
 import { alertingService } from '../services/alerting'
-import { getDefaultProvider, getProvider } from './registry'
+import {
+  getDefaultProvider,
+  getProvider,
+  getHealthyProviders,
+  getAllProviderHealth,
+  recordProviderSuccess,
+  recordProviderFailure,
+  selectProviderForOrder,
+} from './registry'
+import {
+  recordFiatQuoteLatency,
+  recordFiatQuoteFailure,
+  recordFiatOrder,
+  recordFiatRateDrift,
+} from '../utils/metrics'
 import type {
   CreateFiatOrderInput,
   FiatQuoteInput,
 } from '../validators/fiat-validators'
-import type { NormalizedWebhookStatus, ParsedWebhook } from './types'
+import type {
+  BestExecutionQuoteResult,
+  ExcludedProviderQuote,
+  FiatDirection,
+  NormalizedWebhookStatus,
+  ParsedWebhook,
+  ProviderSelectionPolicy,
+  QuoteResult,
+  RankedQuote,
+} from './types'
+import { NoHealthyProvidersError, FiatOrderError } from './types'
 
 /** How long a PENDING/PROCESSING order may sit before the age-out job fails it. */
 export const STALE_ORDER_MAX_AGE_MS = Number(
   process.env.FIAT_STALE_ORDER_MAX_AGE_MS || 24 * 60 * 60 * 1000
 )
 
+/** How long a quote returned by getBestExecutionQuote stays honorable (#313). */
+export const QUOTE_LOCK_TTL_MS = Number(
+  process.env.FIAT_QUOTE_LOCK_TTL_MS || 60_000
+)
+
+/** Per-provider timeout for a single quote request in the parallel fan-out. */
+const QUOTE_PROVIDER_TIMEOUT_MS = Number(
+  process.env.FIAT_QUOTE_PROVIDER_TIMEOUT_MS || 8_000
+)
+
+/** Beyond this |settled - quoted| / quoted, emit a rate-drift alert + webhook. */
+export const RATE_DRIFT_TOLERANCE_PCT = Number(
+  process.env.FIAT_RATE_DRIFT_TOLERANCE_PCT || 0.02
+)
+
+/** Beyond this drift, escalate to critical — flags the order for manual re-quote/refund review. */
+export const RATE_DRIFT_CRITICAL_PCT = Number(
+  process.env.FIAT_RATE_DRIFT_CRITICAL_PCT || 0.1
+)
+
+/**
+ * How close a candidate on-chain transaction's amount must be to an order's
+ * quoted crypto amount to be considered a match during reconciliation.
+ * Deliberately looser than RATE_DRIFT_TOLERANCE_PCT (a legitimate settlement
+ * may itself drift a little) — this exists to stop the "any unlinked
+ * confirmed transaction for this user+asset" heuristic from cross-linking two
+ * different providers' concurrent orders for the same user/asset (#313).
+ */
+export const RECONCILE_AMOUNT_TOLERANCE_PCT = Number(
+  process.env.FIAT_RECONCILE_AMOUNT_TOLERANCE_PCT || 0.05
+)
+
 type Db = typeof db
+
+export { FiatOrderError }
 
 // ── Quotes ────────────────────────────────────────────────────────────────────
 
 export async function getFiatQuote(input: FiatQuoteInput) {
-  const provider = getDefaultProvider()
-  return provider.getQuote({
-    direction: input.direction,
-    fiatAmount: input.fiatAmount,
-    fiatCurrency: input.fiatCurrency,
-    assetSymbol: input.assetSymbol,
+  const provider = selectProviderForOrder({ policy: 'DEFAULT' })
+  try {
+    const quote = await provider.getQuote({
+      direction: input.direction,
+      fiatAmount: input.fiatAmount,
+      fiatCurrency: input.fiatCurrency,
+      assetSymbol: input.assetSymbol,
+    })
+    recordProviderSuccess(provider.name)
+    return quote
+  } catch (err) {
+    recordProviderFailure(provider.name)
+    throw err
+  }
+}
+
+/** Race a provider quote against a timeout so one slow vendor never blocks the fan-out. */
+async function quoteWithTimeout(
+  providerName: string,
+  fn: () => Promise<QuoteResult>,
+  timeoutMs: number
+): Promise<QuoteResult> {
+  return new Promise<QuoteResult>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`Quote request timed out after ${timeoutMs}ms`))
+    }, timeoutMs)
+    fn()
+      .then((r) => {
+        clearTimeout(timer)
+        resolve(r)
+      })
+      .catch((err) => {
+        clearTimeout(timer)
+        reject(err)
+      })
   })
+}
+
+/** Best executable quote for the given direction: higher cryptoAmount is better on-ramp, lower is better off-ramp. */
+function isBetterQuote(
+  a: QuoteResult,
+  b: QuoteResult,
+  direction: FiatDirection
+): boolean {
+  if (direction === 'ON_RAMP') return a.cryptoAmount > b.cryptoAmount
+  return a.cryptoAmount < b.cryptoAmount
+}
+
+/**
+ * Query every healthy provider in parallel, normalize + rank the results, and
+ * persist a time-boxed {@link FiatQuoteLock} per successful quote so the
+ * caller (or a subsequent order-creation call) can reference one by id.
+ *
+ * Never throws for partial failure — a provider that times out or errors is
+ * moved to `excluded` with a reason and the rest of the ranking proceeds.
+ * Throws {@link NoHealthyProvidersError} only when no provider could be
+ * reached at all.
+ */
+export async function getBestExecutionQuote(
+  input: FiatQuoteInput,
+  ctx: { userId: string },
+  database: Db = db
+): Promise<BestExecutionQuoteResult> {
+  const providers = getHealthyProviders()
+
+  if (providers.length === 0) {
+    throw new NoHealthyProvidersError(
+      getAllProviderHealth().map((h) => ({
+        provider: h.provider,
+        reason: `circuit ${h.state} after ${h.consecutiveFailures} consecutive failures`,
+      }))
+    )
+  }
+
+  const settled = await Promise.allSettled(
+    providers.map(async (provider) => {
+      const start = Date.now()
+      try {
+        const quote = await quoteWithTimeout(
+          provider.name,
+          () =>
+            provider.getQuote({
+              direction: input.direction,
+              fiatAmount: input.fiatAmount,
+              fiatCurrency: input.fiatCurrency,
+              assetSymbol: input.assetSymbol,
+            }),
+          QUOTE_PROVIDER_TIMEOUT_MS
+        )
+        recordProviderSuccess(provider.name)
+        recordFiatQuoteLatency(
+          provider.name,
+          input.direction,
+          (Date.now() - start) / 1000
+        )
+        return quote
+      } catch (err) {
+        recordProviderFailure(provider.name)
+        recordFiatQuoteLatency(
+          provider.name,
+          input.direction,
+          (Date.now() - start) / 1000
+        )
+        const reason = err instanceof Error ? err.message : String(err)
+        recordFiatQuoteFailure(provider.name, reason)
+        throw new Error(`${provider.name}: ${reason}`)
+      }
+    })
+  )
+
+  const successes: QuoteResult[] = []
+  const excluded: ExcludedProviderQuote[] = []
+
+  settled.forEach((result, i) => {
+    if (result.status === 'fulfilled') {
+      successes.push(result.value)
+    } else {
+      const providerName = providers[i].name
+      const reason =
+        result.reason instanceof Error
+          ? result.reason.message
+          : String(result.reason)
+      excluded.push({ provider: providerName, reason })
+    }
+  })
+
+  successes.sort((a, b) => (isBetterQuote(a, b, input.direction) ? -1 : 1))
+
+  const expiresAt = new Date(Date.now() + QUOTE_LOCK_TTL_MS)
+  const ranked: RankedQuote[] = []
+
+  for (let i = 0; i < successes.length; i++) {
+    const q = successes[i]
+    const lock = await (database as any).fiatQuoteLock.create({
+      data: {
+        userId: ctx.userId,
+        provider: q.provider,
+        direction: q.direction,
+        fiatAmount: q.fiatAmount,
+        fiatCurrency: q.fiatCurrency,
+        assetSymbol: q.assetSymbol,
+        cryptoAmount: q.cryptoAmount,
+        rate: q.rate ?? null,
+        fees: q.fees as any,
+        providerQuoteId: q.providerQuoteId ?? null,
+        expiresAt,
+      },
+    })
+    ranked.push({
+      ...q,
+      quoteId: lock.id,
+      expiresAt: expiresAt.toISOString(),
+      rank: i + 1,
+    })
+  }
+
+  return { best: ranked[0] ?? null, quotes: ranked, excluded }
 }
 
 // ── Order creation ──────────────────────────────────────────────────────────
@@ -58,21 +282,119 @@ export interface CreateOrderContext {
   walletAddress: string
 }
 
+async function resolveOrderProvider(
+  input: CreateFiatOrderInput,
+  database: Db
+): Promise<{
+  providerName: string
+  quoteRate: number | null
+  quotedCryptoAmount: number | null
+  fees: unknown
+  providerQuoteId: string | null
+  rateLockExpiresAt: Date | null
+  lockId: string | null
+}> {
+  if (input.quoteId) {
+    const lock = await (database as any).fiatQuoteLock.findUnique({
+      where: { id: input.quoteId },
+    })
+
+    if (!lock || lock.userId !== input.userId) {
+      throw new FiatOrderError('quote_not_found', 404, 'Quote not found')
+    }
+    if (lock.consumedAt) {
+      throw new FiatOrderError(
+        'quote_already_used',
+        409,
+        'This quote has already been used to create an order'
+      )
+    }
+    if (new Date(lock.expiresAt).getTime() < Date.now()) {
+      throw new FiatOrderError(
+        'quote_expired',
+        409,
+        'Quote is no longer valid — request a fresh quote',
+        { freshQuoteUrl: '/api/v1/fiat/quotes' }
+      )
+    }
+    if (
+      lock.direction !== input.direction ||
+      lock.fiatCurrency !== input.fiatCurrency ||
+      lock.assetSymbol !== input.assetSymbol ||
+      Number(lock.fiatAmount) !== input.fiatAmount
+    ) {
+      throw new FiatOrderError(
+        'quote_mismatch',
+        409,
+        'Order parameters do not match the locked quote'
+      )
+    }
+
+    return {
+      providerName: lock.provider,
+      quoteRate: lock.rate != null ? Number(lock.rate) : null,
+      quotedCryptoAmount: Number(lock.cryptoAmount),
+      fees: lock.fees,
+      providerQuoteId: lock.providerQuoteId,
+      rateLockExpiresAt: lock.expiresAt,
+      lockId: lock.id,
+    }
+  }
+
+  const policy = (process.env.FIAT_PROVIDER_SELECTION_POLICY ||
+    'DEFAULT') as ProviderSelectionPolicy
+  const provider = selectProviderForOrder({
+    policy: input.provider ? 'PREFER_PROVIDER' : policy,
+    preferredProvider: input.provider,
+  })
+
+  try {
+    const quote = await provider.getQuote({
+      direction: input.direction,
+      fiatAmount: input.fiatAmount,
+      fiatCurrency: input.fiatCurrency,
+      assetSymbol: input.assetSymbol,
+    })
+    recordProviderSuccess(provider.name)
+    return {
+      providerName: provider.name,
+      quoteRate: quote.rate ?? null,
+      quotedCryptoAmount: quote.cryptoAmount,
+      fees: quote.fees as any,
+      providerQuoteId: quote.providerQuoteId ?? null,
+      rateLockExpiresAt: new Date(Date.now() + QUOTE_LOCK_TTL_MS),
+      lockId: null,
+    }
+  } catch (err) {
+    recordProviderFailure(provider.name)
+    throw err
+  }
+}
+
 export async function createFiatOrder(
   input: CreateFiatOrderInput,
   ctx: CreateOrderContext,
   database: Db = db
 ) {
-  const provider = getDefaultProvider()
+  const resolved = await resolveOrderProvider(input, database)
+  const provider = getProvider(resolved.providerName)
 
-  const created = await provider.createOrder({
-    userId: input.userId,
-    direction: input.direction,
-    fiatAmount: input.fiatAmount,
-    fiatCurrency: input.fiatCurrency,
-    assetSymbol: input.assetSymbol,
-    walletAddress: ctx.walletAddress,
-  })
+  let created
+  try {
+    created = await provider.createOrder({
+      userId: input.userId,
+      direction: input.direction,
+      fiatAmount: input.fiatAmount,
+      fiatCurrency: input.fiatCurrency,
+      assetSymbol: input.assetSymbol,
+      walletAddress: ctx.walletAddress,
+    })
+    recordProviderSuccess(provider.name)
+  } catch (err) {
+    recordProviderFailure(provider.name)
+    recordFiatOrder(provider.name, 'CREATE_FAILED')
+    throw err
+  }
 
   const initialStatus = mapToOrderStatus(created.status)
 
@@ -84,13 +406,37 @@ export async function createFiatOrder(
       direction: input.direction,
       fiatAmount: input.fiatAmount,
       fiatCurrency: input.fiatCurrency,
-      cryptoAmount: created.cryptoAmount ?? null,
+      cryptoAmount: created.cryptoAmount ?? resolved.quotedCryptoAmount ?? null,
       assetSymbol: input.assetSymbol,
       status: initialStatus,
       checkoutUrl: created.checkoutUrl ?? null,
       kycUrl: created.kycUrl ?? null,
+      quoteRate: resolved.quoteRate,
+      quotedCryptoAmount: resolved.quotedCryptoAmount,
+      fees: resolved.fees as any,
+      providerQuoteId: resolved.providerQuoteId,
+      rateLockExpiresAt: resolved.rateLockExpiresAt,
     },
   })
+
+  if (resolved.lockId) {
+    await (database as any).fiatQuoteLock
+      .update({
+        where: { id: resolved.lockId },
+        data: { consumedAt: new Date() },
+      })
+      .catch((err: unknown) => {
+        // Non-fatal: the order is already created. Worst case the same quote
+        // could be raced onto a second order — logged for investigation.
+        logger.error('[Fiat] Failed to mark quote lock consumed', {
+          quoteId: resolved.lockId,
+          orderId: order.id,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      })
+  }
+
+  recordFiatOrder(provider.name, initialStatus)
 
   logger.info('[Fiat] Order created', {
     orderId: order.id,
@@ -119,6 +465,10 @@ export interface ProcessWebhookResult {
  * (SETTLED/FAILED/REFUNDED) are never overwritten, and a provider "completed"
  * callback only advances the order to PROCESSING — never SETTLED — because
  * on-chain confirmation is authoritative (see reconcileFiatOrders).
+ *
+ * Keyed on (provider, providerOrderId) — a webhook from provider A can never
+ * mutate an order created by provider B, even if the providerOrderId strings
+ * happened to collide, because the unique constraint is on the pair (#313).
  */
 export async function processProviderWebhook(
   providerName: string,
@@ -199,6 +549,7 @@ export async function processProviderWebhook(
 
   // Emit outbound webhook for terminal failure/refund so subscribers react.
   if (updated.status === 'FAILED' || updated.status === 'REFUNDED') {
+    recordFiatOrder(providerName, updated.status)
     dispatchWebhookEvent('fiat.order.failed', {
       orderId: updated.id,
       provider: providerName,
@@ -231,6 +582,14 @@ export async function processProviderWebhook(
  * Try to settle one order against a specific claimed on-chain tx hash.
  * Settles only when a CONFIRMED Transaction row exists for that hash — i.e.
  * the Stellar event listener has independently observed the crypto leg.
+ *
+ * Also computes and persists the quoted-vs-settled delta (#313): when the
+ * order carries a quotedCryptoAmount, the realized settledCryptoAmount/
+ * settledRate are compared against it, and drift beyond
+ * RATE_DRIFT_TOLERANCE_PCT raises an operational alert plus a
+ * `fiat.order.rate_mismatch` webhook. Over-delivery is credited (the order's
+ * original `cryptoAmount` — what the user was promised — is never reduced);
+ * this only ever adds visibility, never claws back a better-than-quoted fill.
  */
 export async function reconcileSingleOrder(
   orderId: string,
@@ -257,6 +616,22 @@ export async function reconcileSingleOrder(
     return false
   }
 
+  const settledCryptoAmount = Number(tx.amount)
+  const quotedCryptoAmount =
+    order.quotedCryptoAmount != null
+      ? Number(order.quotedCryptoAmount)
+      : order.cryptoAmount != null
+        ? Number(order.cryptoAmount)
+        : null
+  const fiatAmount = Number(order.fiatAmount)
+
+  let settledRate: number | null = null
+  let driftPct: number | null = null
+  if (quotedCryptoAmount && quotedCryptoAmount > 0) {
+    driftPct = (settledCryptoAmount - quotedCryptoAmount) / quotedCryptoAmount
+    settledRate = fiatAmount > 0 ? settledCryptoAmount / fiatAmount : null
+  }
+
   const settled = await (database as any).fiatOrder.update({
     where: { id: order.id },
     data: {
@@ -264,13 +639,18 @@ export async function reconcileSingleOrder(
       transactionId: tx.id,
       settledAt: new Date(),
       cryptoAmount: order.cryptoAmount ?? tx.amount,
+      settledCryptoAmount,
+      settledRate,
     },
   })
 
   logger.info('[Fiat] Order settled via on-chain confirmation', {
     orderId: settled.id,
     txHash,
+    driftPct,
   })
+
+  recordFiatOrder(order.provider, 'SETTLED')
 
   dispatchWebhookEvent('fiat.order.settled', {
     orderId: settled.id,
@@ -280,6 +660,46 @@ export async function reconcileSingleOrder(
     txHash,
     userId: settled.userId,
   }).catch(() => {})
+
+  if (driftPct !== null) {
+    recordFiatRateDrift(order.provider, order.direction, Math.abs(driftPct))
+
+    if (Math.abs(driftPct) > RATE_DRIFT_TOLERANCE_PCT) {
+      const critical = Math.abs(driftPct) > RATE_DRIFT_CRITICAL_PCT
+      alertingService
+        .emit(
+          {
+            title: 'Fiat order settled with rate drift beyond tolerance',
+            description:
+              `Order ${order.id} (${order.provider}) settled ${(driftPct * 100).toFixed(2)}% ` +
+              `${driftPct < 0 ? 'below' : 'above'} the quoted crypto amount.` +
+              (critical
+                ? ' Drift exceeds the critical threshold — review for re-quote/refund.'
+                : ''),
+            severity: critical ? 'critical' : 'warning',
+            component: 'fiat-settlement',
+            metadata: {
+              orderId: order.id,
+              provider: order.provider,
+              direction: order.direction,
+              driftPct,
+            },
+          },
+          `fiat:drift:${order.id}`
+        )
+        .catch(() => {})
+
+      dispatchWebhookEvent('fiat.order.rate_mismatch', {
+        orderId: order.id,
+        provider: order.provider,
+        direction: order.direction,
+        quotedCryptoAmount,
+        settledCryptoAmount,
+        driftPct,
+        userId: order.userId,
+      }).catch(() => {})
+    }
+  }
 
   return true
 }
@@ -302,10 +722,16 @@ export async function reconcileFiatOrders(database: Db = db): Promise<{
 
   let settled = 0
   for (const order of processing) {
-    // Match on any CONFIRMED transaction for this user + asset that isn't
-    // already linked to another fiat order. Provider-claimed hashes are handled
-    // inline at webhook time; here we catch lost-webhook / async-settlement.
-    const candidate = await (database as any).transaction.findFirst({
+    // Match against unlinked CONFIRMED transactions for this user + asset.
+    // Provider-claimed hashes are handled inline at webhook time; here we
+    // catch lost-webhook / async-settlement. With multiple providers able to
+    // have concurrent PROCESSING orders for the same user + asset, matching
+    // on "most recent unlinked" alone can cross-link an order to a
+    // transaction that actually belongs to a *different* provider's order —
+    // so once an order has a quoted crypto amount on record, only a
+    // transaction whose amount falls within RECONCILE_AMOUNT_TOLERANCE_PCT of
+    // that quote is eligible (#313).
+    const candidates = await (database as any).transaction.findMany({
       where: {
         userId: order.userId,
         assetSymbol: order.assetSymbol,
@@ -313,7 +739,43 @@ export async function reconcileFiatOrders(database: Db = db): Promise<{
         fiatOrders: { none: {} },
       },
       orderBy: { confirmedAt: 'desc' },
+      take: 20,
     })
+
+    const expectedAmount =
+      order.quotedCryptoAmount != null
+        ? Number(order.quotedCryptoAmount)
+        : order.cryptoAmount != null
+          ? Number(order.cryptoAmount)
+          : null
+
+    let candidate: any = null
+    if (expectedAmount != null && expectedAmount > 0) {
+      candidate =
+        candidates.find((c: any) => {
+          const amt = Number(c.amount)
+          return (
+            Math.abs(amt - expectedAmount) / expectedAmount <=
+            RECONCILE_AMOUNT_TOLERANCE_PCT
+          )
+        }) ?? null
+
+      if (!candidate && candidates.length > 0) {
+        logger.warn(
+          '[Fiat] Confirmed transactions exist for user+asset but none match this order within tolerance — refusing to cross-link',
+          {
+            orderId: order.id,
+            provider: order.provider,
+            expectedAmount,
+            candidateCount: candidates.length,
+          }
+        )
+      }
+    } else {
+      // Legacy order with no recorded quote amount — degraded match against
+      // the most recent unlinked transaction, same as pre-#313 behavior.
+      candidate = candidates[0] ?? null
+    }
 
     if (candidate) {
       const ok = await reconcileSingleOrder(
@@ -335,7 +797,8 @@ export async function reconcileFiatOrders(database: Db = db): Promise<{
             title: 'Fiat order stuck in PROCESSING without on-chain settlement',
             description:
               `Order ${order.id} (${order.provider}/${order.providerOrderId}) has been ` +
-              `PROCESSING for ${Math.round(ageMs / 3_600_000)}h with no confirmed on-chain transaction.`,
+              `PROCESSING for ${Math.round(ageMs / 3_600_000)}h with no confirmed on-chain transaction. ` +
+              `Quoted crypto amount: ${expectedAmount ?? 'unknown'}.`,
             severity: 'critical',
             component: 'fiat-reconciliation',
             metadata: {
@@ -343,6 +806,7 @@ export async function reconcileFiatOrders(database: Db = db): Promise<{
               provider: order.provider,
               providerOrderId: order.providerOrderId,
               userId: order.userId,
+              quotedCryptoAmount: expectedAmount,
             },
           },
           `fiat:stuck:${order.id}`
@@ -413,4 +877,4 @@ function isTerminal(status: string): boolean {
   return status === 'SETTLED' || status === 'FAILED' || status === 'REFUNDED'
 }
 
-export { getProvider }
+export { getProvider, getDefaultProvider }

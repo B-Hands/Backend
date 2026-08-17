@@ -35,10 +35,12 @@ jest.mock('../../src/utils/logger', () => ({
 
 // --- Service layer: mock so no DB / provider network is touched ---------------
 const mockGetFiatQuote = jest.fn()
+const mockGetBestExecutionQuote = jest.fn()
 const mockCreateFiatOrder = jest.fn()
 const mockProcessProviderWebhook = jest.fn()
 jest.mock('../../src/fiat/service', () => ({
   getFiatQuote: (...a: unknown[]) => mockGetFiatQuote(...a),
+  getBestExecutionQuote: (...a: unknown[]) => mockGetBestExecutionQuote(...a),
   createFiatOrder: (...a: unknown[]) => mockCreateFiatOrder(...a),
   processProviderWebhook: (...a: unknown[]) => mockProcessProviderWebhook(...a),
 }))
@@ -124,6 +126,69 @@ describe('POST /api/fiat/quote', () => {
   })
 })
 
+describe('GET /api/fiat/quotes', () => {
+  it('returns the ranked best-execution result for a valid request', async () => {
+    mockGetBestExecutionQuote.mockResolvedValue({
+      best: {
+        provider: 'sandbox',
+        cryptoAmount: 99,
+        quoteId: 'lock-1',
+        rank: 1,
+      },
+      quotes: [
+        { provider: 'sandbox', cryptoAmount: 99, quoteId: 'lock-1', rank: 1 },
+        { provider: 'moonpay', cryptoAmount: 98, quoteId: 'lock-2', rank: 2 },
+      ],
+      excluded: [],
+    })
+    const res = await request(app).get('/api/fiat/quotes').query({
+      direction: 'ON_RAMP',
+      fiatAmount: 100,
+      fiatCurrency: 'USD',
+      assetSymbol: 'USDC',
+    })
+    expect(res.status).toBe(200)
+    expect(res.body.best.provider).toBe('sandbox')
+    expect(res.body.quotes).toHaveLength(2)
+    expect(mockGetBestExecutionQuote).toHaveBeenCalledWith(
+      expect.objectContaining({ fiatAmount: 100 }),
+      { userId: mockUserId }
+    )
+  })
+
+  it('rejects an invalid query with 400', async () => {
+    const res = await request(app).get('/api/fiat/quotes').query({
+      direction: 'SIDEWAYS',
+      fiatAmount: -5,
+      fiatCurrency: 'usd',
+      assetSymbol: 'USDC',
+    })
+    expect(res.status).toBe(400)
+    expect(mockGetBestExecutionQuote).not.toHaveBeenCalled()
+  })
+
+  it('returns 503 with a structured error when no provider is healthy', async () => {
+    const { NoHealthyProvidersError } = jest.requireActual(
+      '../../src/fiat/types'
+    )
+    mockGetBestExecutionQuote.mockRejectedValue(
+      new NoHealthyProvidersError([
+        { provider: 'moonpay', reason: 'circuit open' },
+        { provider: 'sandbox', reason: 'circuit open' },
+      ])
+    )
+    const res = await request(app).get('/api/fiat/quotes').query({
+      direction: 'ON_RAMP',
+      fiatAmount: 100,
+      fiatCurrency: 'USD',
+      assetSymbol: 'USDC',
+    })
+    expect(res.status).toBe(503)
+    expect(res.body.details.code).toBe('no_healthy_providers')
+    expect(res.body.details.failures).toHaveLength(2)
+  })
+})
+
 describe('POST /api/fiat/orders', () => {
   it('creates an order for the authenticated user', async () => {
     mockCreateFiatOrder.mockResolvedValue({
@@ -157,6 +222,65 @@ describe('POST /api/fiat/orders', () => {
     })
     expect(res.status).toBe(403)
     expect(mockCreateFiatOrder).not.toHaveBeenCalled()
+  })
+
+  it('rejects an expired locked quote with 409 quote_expired (#313)', async () => {
+    const { FiatOrderError } = jest.requireActual('../../src/fiat/types')
+    mockCreateFiatOrder.mockRejectedValue(
+      new FiatOrderError(
+        'quote_expired',
+        409,
+        'Quote is no longer valid — request a fresh quote',
+        { freshQuoteUrl: '/api/v1/fiat/quotes' }
+      )
+    )
+    const res = await request(app).post('/api/fiat/orders').send({
+      userId: mockUserId,
+      direction: 'ON_RAMP',
+      fiatAmount: 100,
+      fiatCurrency: 'USD',
+      assetSymbol: 'USDC',
+      quoteId: '11111111-1111-4111-8111-111111111112',
+    })
+    expect(res.status).toBe(409)
+    expect(res.body.details.code).toBe('quote_expired')
+    expect(res.body.details.freshQuoteUrl).toBe('/api/v1/fiat/quotes')
+  })
+
+  it('returns 503 with a structured error when no provider is healthy', async () => {
+    const { NoHealthyProvidersError } = jest.requireActual(
+      '../../src/fiat/types'
+    )
+    mockCreateFiatOrder.mockRejectedValue(
+      new NoHealthyProvidersError([
+        { provider: 'moonpay', reason: 'circuit open' },
+      ])
+    )
+    const res = await request(app).post('/api/fiat/orders').send({
+      userId: mockUserId,
+      direction: 'ON_RAMP',
+      fiatAmount: 100,
+      fiatCurrency: 'USD',
+      assetSymbol: 'USDC',
+    })
+    expect(res.status).toBe(503)
+    expect(res.body.details.code).toBe('no_healthy_providers')
+  })
+
+  it('forwards an explicit provider preference to the service layer', async () => {
+    mockCreateFiatOrder.mockResolvedValue({ id: 'order-2', status: 'PENDING' })
+    await request(app).post('/api/fiat/orders').send({
+      userId: mockUserId,
+      direction: 'ON_RAMP',
+      fiatAmount: 100,
+      fiatCurrency: 'USD',
+      assetSymbol: 'USDC',
+      provider: 'sandbox',
+    })
+    expect(mockCreateFiatOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'sandbox' }),
+      expect.objectContaining({ walletAddress: 'GWALLET_USER_1' })
+    )
   })
 })
 

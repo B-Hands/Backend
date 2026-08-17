@@ -298,6 +298,45 @@ export const rateLimitActiveViolations = new client.Gauge({
   registers: [register],
 })
 
+// ── Fiat Provider Metrics (#313) ─────────────────────────────────────────────
+
+export const fiatQuoteLatency = new client.Histogram({
+  name: 'fiat_quote_latency_seconds',
+  help: 'Latency of a single fiat provider quote request',
+  labelNames: ['provider', 'direction'] as const,
+  buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10],
+  registers: [register],
+})
+
+export const fiatQuoteFailuresTotal = new client.Counter({
+  name: 'fiat_quote_failures_total',
+  help: 'Total number of failed fiat provider quote requests',
+  labelNames: ['provider', 'reason'] as const,
+  registers: [register],
+})
+
+export const fiatOrdersTotal = new client.Counter({
+  name: 'fiat_orders_total',
+  help: 'Total number of fiat orders by provider and outcome',
+  labelNames: ['provider', 'status'] as const,
+  registers: [register],
+})
+
+export const fiatProviderCircuitState = new client.Gauge({
+  name: 'fiat_provider_circuit_state',
+  help: 'Current circuit breaker state per fiat provider (0=closed, 1=half-open, 2=open)',
+  labelNames: ['provider'] as const,
+  registers: [register],
+})
+
+export const fiatRateDriftPct = new client.Histogram({
+  name: 'fiat_rate_drift_pct',
+  help: 'Absolute percentage drift between quoted and settled crypto amount',
+  labelNames: ['provider', 'direction'] as const,
+  buckets: [0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25],
+  registers: [register],
+})
+
 // ── Helper Functions ─────────────────────────────────────────────────────────────
 
 /**
@@ -486,6 +525,53 @@ export function recordRejectedRequest(
   reason: 'oversized' | 'content_type'
 ): void {
   rejectedRequestsTotal.inc({ reason })
+}
+
+/**
+ * Record a fiat provider quote attempt's latency (success or failure).
+ */
+export function recordFiatQuoteLatency(
+  provider: string,
+  direction: string,
+  durationSeconds: number
+): void {
+  fiatQuoteLatency.observe({ provider, direction }, durationSeconds)
+}
+
+/**
+ * Record a failed fiat provider quote request.
+ */
+export function recordFiatQuoteFailure(provider: string, reason: string): void {
+  fiatQuoteFailuresTotal.inc({ provider, reason })
+}
+
+/**
+ * Record a fiat order outcome for a provider.
+ */
+export function recordFiatOrder(provider: string, status: string): void {
+  fiatOrdersTotal.inc({ provider, status })
+}
+
+/**
+ * Reflect a fiat provider's circuit breaker state in a gauge for dashboards.
+ */
+export function setFiatProviderCircuitState(
+  provider: string,
+  state: 'closed' | 'half-open' | 'open'
+): void {
+  const value = state === 'closed' ? 0 : state === 'half-open' ? 1 : 2
+  fiatProviderCircuitState.set({ provider }, value)
+}
+
+/**
+ * Record the absolute percentage drift between a quoted and settled amount.
+ */
+export function recordFiatRateDrift(
+  provider: string,
+  direction: string,
+  absDriftPct: number
+): void {
+  fiatRateDriftPct.observe({ provider, direction }, absDriftPct)
 }
 
 /**
