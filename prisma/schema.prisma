@@ -471,12 +471,49 @@ model CustodialWallet {
   iv              String
   authTag         String
   keyVersion      Int      @default(1)
+  // Which WalletEncryptionKey encrypted this row, set at write time. Null on
+  // rows written before provenance tracking existed (#323) — such rows are
+  // read via the legacy dual-key fallback in src/stellar/wallet.ts until a
+  // backfill (scripts/backfill-wallet-key-provenance.ts) or a rotation writes
+  // a value here. Deliberately not a required FK for that reason.
+  encryptionKeyId String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
+  encryptionKey WalletEncryptionKey? @relation(fields: [encryptionKeyId], references: [id])
+
   @@index([userId])
   @@index([keyVersion])
+  @@index([encryptionKeyId])
   @@map("custodial_wallets")
+}
+
+enum KeyStatus {
+  ACTIVE
+  RETIRED
+  COMPROMISED
+}
+
+/// Registry of wallet-encryption key *metadata* (#323) — never the key
+/// material itself. `hash` is SHA-256 over the hex key, letting a
+/// CustodialWallet row's `encryptionKeyId` prove which key encrypted it
+/// without the registry ever holding anything an attacker could decrypt
+/// with. See src/keys/registry.ts.
+model WalletEncryptionKey {
+  id             String    @id @default(uuid())
+  keyLabel       String    @unique
+  hash           String    @unique
+  status         KeyStatus @default(ACTIVE)
+  rotatedFromId  String?
+  createdAt      DateTime  @default(now())
+  retiredAt      DateTime?
+
+  rotatedFrom WalletEncryptionKey?  @relation("KeyRotation", fields: [rotatedFromId], references: [id])
+  rotatedTo   WalletEncryptionKey[] @relation("KeyRotation")
+  wallets     CustodialWallet[]
+
+  @@index([status])
+  @@map("wallet_encryption_keys")
 }
 
 model AuthNonce {
