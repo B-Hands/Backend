@@ -2,6 +2,11 @@ import { Keypair } from '@stellar/stellar-sdk'
 import * as crypto from 'crypto'
 import db from '../db'
 import { logger } from '../utils/logger'
+import {
+  deriveBootstrapLabel,
+  getOrRegisterKey,
+  hashKey,
+} from '../keys/registry'
 
 const ALGORITHM = 'aes-256-gcm'
 const HEX_64_REGEX = /^[0-9a-fA-F]{64}$/
@@ -99,6 +104,33 @@ function decryptSecret(encrypted: string, iv: string, authTag: string): string {
 }
 
 /**
+ * Decrypt a secret with an explicit key (not read from env). Used by the
+ * row-provenance read path to decrypt with whichever key an environment's
+ * WALLET_ENCRYPTION_KEY / WALLET_ENCRYPTION_KEY_OLD is proven (by hash) to
+ * match a row's recorded encryptionKeyId, and by rotation/backfill tooling.
+ */
+export function decryptSecretWithKey(
+  encrypted: string,
+  iv: string,
+  authTag: string,
+  keyHex: string
+): string {
+  assertValidHexKey(keyHex, 'Key')
+  const key = Buffer.from(keyHex, 'hex')
+  const decipher = crypto.createDecipheriv(
+    ALGORITHM,
+    key,
+    Buffer.from(iv, 'hex')
+  )
+  decipher.setAuthTag(Buffer.from(authTag, 'hex'))
+
+  let decrypted = decipher.update(encrypted, 'hex', 'utf8')
+  decrypted += decipher.final('utf8')
+
+  return decrypted
+}
+
+/**
  * Decrypt a secret with dual-key support.
  * Tries the primary key first; if that fails and a fallback key is configured,
  * attempts decryption with the fallback key.
@@ -159,6 +191,70 @@ function decryptSecretDualKey(
 }
 
 /**
+ * Register the currently-configured active key (WALLET_ENCRYPTION_KEY) in the
+ * key registry, returning its registry row. Idempotent — looked up by hash,
+ * so repeated calls (every wallet creation/backfill) do not create duplicates.
+ */
+async function registerActiveKey() {
+  const keyHex = getEncryptionKey()
+  return getOrRegisterKey(keyHex, deriveBootstrapLabel(keyHex), 'ACTIVE')
+}
+
+/**
+ * Resolve the raw key material (hex) for a row's recorded encryptionKeyId by
+ * matching its registry hash against the key(s) actually available in this
+ * environment. Returns undefined if the row's key isn't registered, or if
+ * neither WALLET_ENCRYPTION_KEY nor WALLET_ENCRYPTION_KEY_OLD in this
+ * environment produces the recorded hash (operator must supply the right key).
+ */
+async function resolveKeyMaterialForRegistryId(
+  encryptionKeyId: string
+): Promise<string | undefined> {
+  const record = await db.walletEncryptionKey.findUnique({
+    where: { id: encryptionKeyId },
+  })
+  if (!record) return undefined
+
+  const candidates = [getEncryptionKey(), getFallbackEncryptionKey()].filter(
+    (k): k is string => Boolean(k)
+  )
+
+  return candidates.find((candidate) => hashKey(candidate) === record.hash)
+}
+
+/**
+ * Opportunistically record which key decrypted a legacy (encryptionKeyId ===
+ * null) row, so subsequent reads take the deterministic provenance path
+ * instead of the dual-key fallback heuristic. Best-effort: failures are
+ * logged, not thrown — provenance backfill must never break a read.
+ */
+async function backfillProvenance(
+  walletId: string,
+  keyUsed: 'primary' | 'fallback'
+): Promise<void> {
+  try {
+    const keyHex =
+      keyUsed === 'primary' ? getEncryptionKey() : getFallbackEncryptionKey()
+    if (!keyHex) return
+
+    const registryKey = await getOrRegisterKey(
+      keyHex,
+      deriveBootstrapLabel(keyHex),
+      keyUsed === 'primary' ? 'ACTIVE' : 'RETIRED'
+    )
+
+    await db.custodialWallet.update({
+      where: { id: walletId },
+      data: { encryptionKeyId: registryKey.id },
+    })
+  } catch (err) {
+    logger.warn(
+      `[Wallet] Failed to backfill encryptionKeyId for wallet ${walletId}: ${err instanceof Error ? err.message : 'unknown error'}`
+    )
+  }
+}
+
+/**
  * Create a custodial wallet for a user and persist it to the database.
  *
  * SECURITY NOTE: This is a custodial solution where the backend holds user keys.
@@ -179,6 +275,7 @@ export async function createCustodialWallet(userId: string) {
 
   const keypair = Keypair.random()
   const { encrypted, iv, authTag } = encryptSecret(keypair.secret())
+  const activeKey = await registerActiveKey()
 
   const wallet = await db.custodialWallet.create({
     data: {
@@ -188,6 +285,7 @@ export async function createCustodialWallet(userId: string) {
       iv,
       authTag,
       keyVersion: 2,
+      encryptionKeyId: activeKey.id,
     },
   })
 
@@ -204,7 +302,13 @@ export async function getWalletByUserId(userId: string) {
 
 /**
  * Decrypt and return the Stellar Keypair for a user.
- * Supports dual-key reads if WALLET_ENCRYPTION_KEY_OLD is configured.
+ *
+ * Rows with a recorded `encryptionKeyId` (#323) take a deterministic path:
+ * look up which key encrypted this row, decrypt with exactly that key. Rows
+ * without one (written before provenance tracking existed) fall back to the
+ * legacy try-primary-then-fallback heuristic as a compatibility shim, and
+ * opportunistically backfill `encryptionKeyId` so subsequent reads take the
+ * deterministic path.
  */
 export async function getKeypairForUser(userId: string): Promise<Keypair> {
   const wallet = await getWalletByUserId(userId)
@@ -213,7 +317,26 @@ export async function getKeypairForUser(userId: string): Promise<Keypair> {
     throw new Error(`No wallet found for user ${userId}`)
   }
 
-  // Use dual-key decryption for smooth key rotation support
+  if (wallet.encryptionKeyId) {
+    const keyHex = await resolveKeyMaterialForRegistryId(wallet.encryptionKeyId)
+    if (!keyHex) {
+      throw new Error(
+        `[Wallet] No key material available in this environment for user ${userId}'s ` +
+          `recorded encryption key (registry id ${wallet.encryptionKeyId}). Configure ` +
+          `WALLET_ENCRYPTION_KEY / WALLET_ENCRYPTION_KEY_OLD to match the key that encrypted this row.`
+      )
+    }
+
+    const secret = decryptSecretWithKey(
+      wallet.encryptedSecret,
+      wallet.iv,
+      wallet.authTag,
+      keyHex
+    )
+    return Keypair.fromSecret(secret)
+  }
+
+  // Legacy row with no recorded provenance: compatibility shim only.
   const { secret, keyUsed } = decryptSecretDualKey(
     wallet.encryptedSecret,
     wallet.iv,
@@ -226,10 +349,12 @@ export async function getKeypairForUser(userId: string): Promise<Keypair> {
     )
   }
 
-  // Lazy re-encryption for wallets on v1
+  // Lazy re-encryption for wallets on v1 — this rewrites the ciphertext under
+  // the active key, so provenance can be set directly rather than backfilled.
   if (wallet.keyVersion === 1) {
     try {
       const { encrypted, iv, authTag } = encryptSecret(secret)
+      const activeKey = await registerActiveKey()
       await db.custodialWallet.update({
         where: { id: wallet.id },
         data: {
@@ -237,6 +362,7 @@ export async function getKeypairForUser(userId: string): Promise<Keypair> {
           iv,
           authTag,
           keyVersion: 2,
+          encryptionKeyId: activeKey.id,
         },
       })
       logger.info(
@@ -248,6 +374,9 @@ export async function getKeypairForUser(userId: string): Promise<Keypair> {
       )
       // Non-fatal, we still return the keypair
     }
+  } else {
+    // v2 row, ciphertext untouched — just record which key it decrypted with.
+    await backfillProvenance(wallet.id, keyUsed)
   }
 
   return Keypair.fromSecret(secret)
