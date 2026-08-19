@@ -43,8 +43,11 @@ The publisher's `userId` **is** loaded in `followStrategy` — solely to compare
 against the caller for the self-follow check. It never reaches a response.
 
 Displayed statistics are derived from the publisher's own aggregates only. The
-response carries `apy` / `sharpe` / `trackRecordDays` / `sampleCount` and never
-an absolute currency amount.
+response carries `apy` / `sharpe` / `trackRecordDays` / `sampleCount` /
+`vsBenchmark` and never an absolute currency amount. `vsBenchmark` (#320) is a
+relative figure — the strategy's portfolio return minus the benchmark's return
+over the window — sourced from `StrategyAttribution`; see
+docs/PERFORMANCE_ATTRIBUTION.md.
 
 ---
 
@@ -224,6 +227,7 @@ it never influences a decision.
 | `PublishedStrategy`       | One row per user (`userId @unique`) — publish always acts on the caller, so re-publishing upserts. `configVersion` bumps only on a **material** change to the three agent-relevant keys; a label edit is cosmetic.                                                                                                        |
 | `StrategyFollow`          | Carries its own `appliedConfig` **snapshot**, not a live read-through. `publishedStrategyId` is nullable with `onDelete: SetNull` so a follower survives the publisher deleting their account.                                                                                                                            |
 | `PublishedStrategyMetric` | One row per `(strategy, window)`. Precomputed because the leaderboard must `ORDER BY` the score with `skip`/`take` (a JS-computed value cannot be ordered in SQL) and recomputing every publisher's history per request would be a DoS vector. Same precedent as `ProtocolRiskScore` + `src/jobs/protocolRiskScoring.ts`. |
+| `StrategyAttribution`     | One row per `(strategy, window)` (#320). Supplies `vsBenchmark` on marketplace entries — merged onto the `PublishedStrategyMetric` page in `getMarketplace` by id, never used for the SQL sort itself. See docs/PERFORMANCE_ATTRIBUTION.md. |
 
 **Partial unique index** (raw SQL in the migration — Prisma cannot express
 partial uniques):

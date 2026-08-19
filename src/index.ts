@@ -52,6 +52,7 @@ import { scheduleRecurringDeposits } from './jobs/recurringDeposits'
 import { scheduleAlertRules } from './jobs/alertRules'
 import { scheduleStrategyMetrics } from './jobs/strategyMetrics'
 import { scheduleAllocationSuggestions } from './jobs/allocationSuggestions'
+import { scheduleAttribution } from './jobs/attribution'
 // Was never imported or started, so ProtocolRiskScore rows were never refreshed
 // after their first backfill. That matters beyond staleness: risk-ceiling
 // filtering is fail-closed (applyRiskCeiling treats an unknown score as
@@ -117,6 +118,7 @@ let alertRulesHandle: NodeJS.Timeout | null = null
 let strategyMetricsHandle: NodeJS.Timeout | null = null
 let allocationSuggestionsHandle: NodeJS.Timeout | null = null
 let protocolRiskScoringHandle: NodeJS.Timeout | null = null
+let attributionHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
@@ -391,6 +393,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.info('[Shutdown] Allocation suggestions timer cleared')
   }
 
+  if (attributionHandle) {
+    clearInterval(attributionHandle)
+    attributionHandle = null
+    logger.info('[Shutdown] Performance attribution timer cleared')
+  }
+
   if (!httpServer) {
     logger.warn('[Shutdown] No HTTP server to close')
     process.exit(0)
@@ -553,6 +561,7 @@ async function main(): Promise<void> {
   // scored protocols rather than whatever was last left in the table.
   protocolRiskScoringHandle = scheduleProtocolRiskScoring()
   allocationSuggestionsHandle = scheduleAllocationSuggestions()
+  attributionHandle = scheduleAttribution()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────

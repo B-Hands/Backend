@@ -185,6 +185,7 @@ model User {
   parentSubAccounts     SubAccount[]           @relation("ParentOf")
   childSubAccounts      SubAccount[]           @relation("ChildOf")
   allocationSuggestions AllocationSuggestion[]
+  portfolioAttributions PortfolioAttribution[]
 
   @@map("users")
 }
@@ -873,9 +874,10 @@ model PublishedStrategy {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  user      User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  followers StrategyFollow[]
-  metrics   PublishedStrategyMetric[]
+  user         User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  followers    StrategyFollow[]
+  metrics      PublishedStrategyMetric[]
+  attributions StrategyAttribution[]
 
   @@index([isPublished])
   @@map("published_strategies")
@@ -945,6 +947,68 @@ model PublishedStrategyMetric {
   @@index([windowDays, isEligible, sharpe])
   @@index([windowDays, isEligible, apy])
   @@map("published_strategy_metrics")
+}
+
+/// Precomputed performance attribution for one user's own portfolio (#320).
+///
+/// One row per (userId, windowDays), mirroring PublishedStrategyMetric's
+/// rationale: this must be readable by the API without recomputing a window's
+/// worth of daily YieldSnapshot + ProtocolRate history on every request. See
+/// src/jobs/attribution.ts and src/analytics/attribution.ts (the pure,
+/// zero-I/O Brinson-attribution + Cariño-linking core).
+///
+/// `sectorBreakdown` is JSON rather than a child table: it is small
+/// (bounded by the protocol universe), never queried/filtered/sorted on its
+/// own, and always read as a whole alongside the row that owns it — the same
+/// precedent as PortfolioOptimization's AllocationSuggestion.weights.
+model PortfolioAttribution {
+  id                 String   @id @default(uuid())
+  userId             String
+  windowDays         Int
+  portfolioReturn    Float
+  benchmarkReturn    Float
+  allocationEffect   Float
+  selectionEffect    Float
+  unattributedEffect Float
+  reconciliationGap  Float
+  reconciled         Boolean  @default(false)
+  benchmarkVersion   String
+  sectorBreakdown    Json
+  computedAt         DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, windowDays])
+  @@index([userId])
+  @@map("portfolio_attributions")
+}
+
+/// Precomputed benchmark-relative performance attribution for a PUBLISHED
+/// strategy (#320) — what lets the marketplace show `vsBenchmark` next to
+/// `apy`/`sharpe` without recomputing per request. Same anonymization boundary
+/// as PublishedStrategyMetric: this row is derived from the publisher's own
+/// aggregates only and is never joined back to `userId` in a response (see
+/// docs/STRATEGY_MARKETPLACE.md).
+model StrategyAttribution {
+  id                  String   @id @default(uuid())
+  publishedStrategyId String
+  windowDays          Int
+  portfolioReturn     Float
+  benchmarkReturn     Float
+  allocationEffect    Float
+  selectionEffect     Float
+  unattributedEffect  Float
+  reconciliationGap   Float
+  reconciled          Boolean  @default(false)
+  benchmarkVersion    String
+  sectorBreakdown     Json
+  computedAt          DateTime @default(now())
+
+  publishedStrategy PublishedStrategy @relation(fields: [publishedStrategyId], references: [id], onDelete: Cascade)
+
+  @@unique([publishedStrategyId, windowDays])
+  @@index([publishedStrategyId])
+  @@map("strategy_attributions")
 }
 
 /// Portfolio-optimization suggestion (#322). One row per computed suggestion.
