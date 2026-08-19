@@ -15,12 +15,16 @@ module.exports = {
   testMatch: ['**/*.test.ts'],
   // Integration tests that require a live Postgres instance are excluded from
   // the default `npm test` run (they fail in CI without a provisioned DB).
-  // Run them manually with: npx jest --testPathPattern='integration/(deposit-withdraw|tax-report)' --setupFilesAfterSetup=...
+  // Run them manually with: npx jest --testPathPattern='integration/(deposit-withdraw|tax-report|outbox)' --setupFilesAfterSetup=...
   testPathIgnorePatterns: [
     '/node_modules/',
     'deposit-withdraw\\.integration\\.test\\.ts$',
     'tax-report\\.integration\\.test\\.ts$',
     'regression\\.test\\.ts$',
+    // #325 — atomic-claim/kill-the-worker/priority-ordering scenarios against
+    // a real DB. See the header comment in
+    // tests/integration/outbox/dispatcher.integration.test.ts for how to run it.
+    'outbox/dispatcher\\.integration\\.test\\.ts$',
   ],
   // Must run before any test module so src/config/env.ts sees the test config
   // at import time. See tests/setup-env.ts.

@@ -910,4 +910,158 @@ router.post(
   }
 )
 
+// ── Durable outbox admin tooling (#325) ─────────────────────────────────────
+
+/**
+ * GET /api/admin/outbox
+ * List/query outbox ops with filters. Required scope: outbox:read
+ *
+ * Query params: status, kind, priority, userId, limit (max 500), offset
+ */
+router.get(
+  '/outbox',
+  requireAdminScope('outbox:read'),
+  async (req: Request, res: Response) => {
+    try {
+      const { status, kind, priority, userId, limit, offset } = req.query
+      const { listOps } = await import('../outbox/service')
+
+      const result = await listOps({
+        status: status as any,
+        kind: kind as any,
+        priority: priority as any,
+        userId: userId as string | undefined,
+        limit: limit ? parseInt(limit as string, 10) : undefined,
+        offset: offset ? parseInt(offset as string, 10) : undefined,
+      })
+
+      auditLog(req, res, 'OUTBOX_LIST', 'success', {
+        status,
+        kind,
+        priority,
+        userId,
+        returned: result.ops.length,
+      })
+
+      res.status(200).json({
+        success: true,
+        data: result,
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'OUTBOX_LIST', 'failure', { error: message })
+      res
+        .status(500)
+        .json({ success: false, error: 'Failed to list outbox ops' })
+    }
+  }
+)
+
+/**
+ * GET /api/admin/outbox/stats
+ * Queue depth by status/priority — throughput view. Required scope: outbox:read
+ */
+router.get(
+  '/outbox/stats',
+  requireAdminScope('outbox:read'),
+  async (req: Request, res: Response) => {
+    try {
+      const { getQueueStats } = await import('../outbox/service')
+      const stats = await getQueueStats()
+      auditLog(req, res, 'OUTBOX_STATS', 'success')
+      res.status(200).json({
+        success: true,
+        data: { stats },
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'OUTBOX_STATS', 'failure', { error: message })
+      res
+        .status(500)
+        .json({ success: false, error: 'Failed to get outbox stats' })
+    }
+  }
+)
+
+/**
+ * GET /api/admin/outbox/:id
+ * Inspect a single outbox op. Required scope: outbox:read
+ */
+router.get(
+  '/outbox/:id',
+  requireAdminScope('outbox:read'),
+  async (req: Request, res: Response) => {
+    try {
+      const { getOp } = await import('../outbox/service')
+      const op = await getOp(req.params.id)
+      if (!op) {
+        auditLog(req, res, 'OUTBOX_GET', 'failure', {
+          opId: req.params.id,
+          error: 'not_found',
+        })
+        return res
+          .status(404)
+          .json({ success: false, error: 'Outbox op not found' })
+      }
+      auditLog(req, res, 'OUTBOX_GET', 'success', { opId: op.id })
+      res.status(200).json({ success: true, data: op })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'OUTBOX_GET', 'failure', { error: message })
+      res.status(500).json({ success: false, error: 'Failed to get outbox op' })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/outbox/:id/retry
+ * Force a FAILED op back to PENDING for the dispatcher to re-attempt.
+ * Required scope: outbox:write
+ */
+router.post(
+  '/outbox/:id/retry',
+  requireAdminScope('outbox:write'),
+  async (req: Request, res: Response) => {
+    try {
+      const { forceRetry } = await import('../outbox/service')
+      const op = await forceRetry(req.params.id)
+      auditLog(req, res, 'OUTBOX_FORCE_RETRY', 'success', { opId: op.id })
+      res.status(200).json({ success: true, data: op })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'OUTBOX_FORCE_RETRY', 'failure', {
+        opId: req.params.id,
+        error: message,
+      })
+      res.status(400).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/outbox/:id/cancel
+ * Cancel an unsent (PENDING only) op. Required scope: outbox:write
+ */
+router.post(
+  '/outbox/:id/cancel',
+  requireAdminScope('outbox:write'),
+  async (req: Request, res: Response) => {
+    try {
+      const { cancelOp } = await import('../outbox/service')
+      const op = await cancelOp(req.params.id)
+      auditLog(req, res, 'OUTBOX_CANCEL', 'success', { opId: op.id })
+      res.status(200).json({ success: true, data: op })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'OUTBOX_CANCEL', 'failure', {
+        opId: req.params.id,
+        error: message,
+      })
+      res.status(400).json({ success: false, error: message })
+    }
+  }
+)
+
 export default router

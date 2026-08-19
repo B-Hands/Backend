@@ -55,6 +55,12 @@ jest.mock('../../src/utils/metrics', () => ({
   recordHttpRequest: jest.fn(),
   recordRequestTimeout: jest.fn(),
   recordRejectedRequest: jest.fn(),
+  // #325 — the outbox dispatcher records these on every submit attempt.
+  recordOutboxOp: jest.fn(),
+  updateOutboxQueueDepth: jest.fn(),
+  recordOutboxLatency: jest.fn(),
+  recordOutboxFeeBump: jest.fn(),
+  updateOutboxStuckSubmitted: jest.fn(),
 }))
 
 // Avoid external alerting side effects

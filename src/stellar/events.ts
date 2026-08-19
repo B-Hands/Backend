@@ -34,6 +34,7 @@ import {
 } from '../utils/metrics'
 import { dispatchWebhookEvent } from '../services/webhookDispatcher'
 import { checkAndActivateOnDeposit } from '../referral/service'
+import { reconcileOutboxOpByTxHash } from '../outbox/service'
 import {
   createLotForDeposit,
   recordDisposalsForWithdrawal,
@@ -256,6 +257,11 @@ async function handleDepositEvent(
     })
   )) as any
 
+  // #325 confirmation fallback: closes out a SUBMITTED OutboxOp left behind
+  // by a dispatcher crash between submission and its own confirmation. No-op
+  // for txHashes with no matching op.
+  await reconcileOutboxOpByTxHash(tx, event.txHash)
+
   const position = (await timedDbOperation(() =>
     tx.position.findFirst({
       where: {
@@ -365,6 +371,11 @@ async function handleWithdrawEvent(
       },
     })
   )) as any
+
+  // #325 confirmation fallback: closes out a SUBMITTED OutboxOp left behind
+  // by a dispatcher crash between submission and its own confirmation. No-op
+  // for txHashes with no matching op.
+  await reconcileOutboxOpByTxHash(tx, event.txHash)
 
   const position = (await timedDbOperation(() =>
     tx.position.findFirst({

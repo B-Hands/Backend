@@ -12,6 +12,7 @@
 - **[STRATEGY_MARKETPLACE.md](STRATEGY_MARKETPLACE.md)** - Strategy marketplace / opt-in copy-trading: metric formula, eligibility gate, privacy & custody boundaries (#285)
 - **[PORTFOLIO_OPTIMIZATION.md](PORTFOLIO_OPTIMIZATION.md)** - Portfolio optimization & allocation suggestions: objective, λ mapping, estimation method, advisory invariant, limitations (#322)
 - **[PERFORMANCE_ATTRIBUTION.md](PERFORMANCE_ATTRIBUTION.md)** - Benchmark-relative Brinson attribution: allocation/selection effects, Cariño linking, benchmark definition, `vsBenchmark` on the marketplace (#320)
+- **[OUTBOX.md](OUTBOX.md)** - Durable outbox & prioritized on-chain transaction queue: state machine, idempotency, retry/fee-bump policy, priority ordering, admin API (#325)
 
 ### For DevOps/Deployment
 

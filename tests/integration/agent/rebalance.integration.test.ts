@@ -44,7 +44,9 @@ const agentLogStore: Array<{
 
 const mockPositionFindFirst = jest.fn()
 const mockPositionFindMany = jest.fn()
-const mockTransactionCreate = jest.fn().mockResolvedValue({})
+const mockTransactionCreate = jest
+  .fn()
+  .mockImplementation(({ data }: any) => ({ id: 'txn-1', ...data }))
 const mockAgentLogCreate = jest
   .fn()
   .mockImplementation(({ data }: { data: any }) => {
@@ -57,9 +59,16 @@ const mockAgentLogCreate = jest
     return Promise.resolve({ id: `log-${agentLogStore.length}` })
   })
 
-jest.mock('../../../src/db', () => ({
-  __esModule: true,
-  default: {
+// #325: triggerRebalance now enqueues a durable OutboxOp (transactionally
+// with the Transaction row) instead of calling the Stellar contract inline —
+// see src/outbox/service.ts#enqueueOutboxOp. The outbox itself has its own
+// coverage (tests/unit/outbox/, tests/integration/outbox/); here it only
+// needs to look like a real Prisma transaction client.
+const mockOutboxOpCreate = jest.fn().mockResolvedValue({ id: 'op-1' })
+const mockOutboxOpFindUnique = jest.fn().mockResolvedValue(null)
+
+jest.mock('../../../src/db', () => {
+  const client: any = {
     agentLog: {
       create: (...args: unknown[]) => mockAgentLogCreate(...args),
     },
@@ -70,6 +79,10 @@ jest.mock('../../../src/db', () => ({
     transaction: {
       create: (...args: unknown[]) => mockTransactionCreate(...args),
     },
+    outboxOp: {
+      create: (...args: unknown[]) => mockOutboxOpCreate(...args),
+      findUnique: (...args: unknown[]) => mockOutboxOpFindUnique(...args),
+    },
     user: {
       // Should NOT be called by logAgentAction anymore
       findMany: jest
@@ -78,7 +91,17 @@ jest.mock('../../../src/db', () => ({
           new Error('db.user.findMany should not be called for agent logging')
         ),
     },
-  },
+  }
+  client.$transaction = (fn: (tx: unknown) => unknown) => fn(client)
+  return { __esModule: true, default: client }
+})
+
+// dispatchInBackground fires an async dispatchOne(opId) that this test does
+// not need to exercise (the outbox's own dispatch behavior is covered
+// elsewhere) — stub it to a no-op so no unhandled background call touches
+// mocks this suite doesn't set up.
+jest.mock('../../../src/outbox/dispatcher', () => ({
+  dispatchInBackground: jest.fn(),
 }))
 
 // ------------------------------------------------------------------------

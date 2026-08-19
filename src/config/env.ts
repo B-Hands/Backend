@@ -590,4 +590,46 @@ export const config = {
       process.env.RECURRING_DEPOSITS_INTERVAL_MS || '300000'
     ),
   },
+  outbox: {
+    /**
+     * How often (ms) the background dispatcher sweeps for PENDING ops left
+     * behind by a crash (or whose backoff window has elapsed) and for
+     * SUBMITTED ops that have gone quiet long enough to need a fee-bump or
+     * escalation (default: 15 seconds). See docs/OUTBOX.md.
+     */
+    dispatchIntervalMs: parseInt(
+      process.env.OUTBOX_DISPATCH_INTERVAL_MS || '15000'
+    ),
+    /** Attempts before a PENDING op is given up on and moved to FAILED. */
+    maxAttempts: parseInt(process.env.OUTBOX_MAX_ATTEMPTS || '5'),
+    /** Full-jitter exponential backoff bounds (ms) between submit attempts. */
+    backoffBaseMs: parseInt(process.env.OUTBOX_BACKOFF_BASE_MS || '2000'),
+    backoffMaxMs: parseInt(process.env.OUTBOX_BACKOFF_MAX_MS || '120000'),
+    /**
+     * How long (ms) a SUBMITTED op may sit unconfirmed before the dispatcher
+     * treats it as congested and resubmits at a higher fee (default: 90s —
+     * comfortably past normal Stellar ledger close time).
+     */
+    submittedTimeoutMs: parseInt(
+      process.env.OUTBOX_SUBMITTED_TIMEOUT_MS || '90000'
+    ),
+    /** Fee multiplier applied on each fee-bump resubmission (compounds). */
+    feeBumpMultiplier: parseFloat(
+      process.env.OUTBOX_FEE_BUMP_MULTIPLIER || '2'
+    ),
+    /** Hard cap on fee-bump resubmissions before a stuck op is escalated to FAILED. */
+    feeBumpMaxAttempts: parseInt(
+      process.env.OUTBOX_FEE_BUMP_MAX_ATTEMPTS || '3'
+    ),
+    /** Global cap on ops in flight (claimed, not yet CONFIRMED/FAILED) at once. */
+    globalMaxInFlight: parseInt(
+      process.env.OUTBOX_GLOBAL_MAX_IN_FLIGHT || '10'
+    ),
+    /** Per-signer (per Stellar account) cap on ops in flight at once. */
+    perAccountMaxInFlight: parseInt(
+      process.env.OUTBOX_PER_ACCOUNT_MAX_IN_FLIGHT || '1'
+    ),
+    /** Ops claimed per dispatcher sweep, priority-ordered (see src/outbox/stateMachine.ts). */
+    batchSize: parseInt(process.env.OUTBOX_BATCH_SIZE || '20'),
+  },
 }

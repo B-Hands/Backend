@@ -574,6 +574,75 @@ export function recordFiatRateDrift(
   fiatRateDriftPct.observe({ provider, direction }, absDriftPct)
 }
 
+// ── Outbox Metrics (#325) ────────────────────────────────────────────────────
+
+export const outboxOpsTotal = new client.Counter({
+  name: 'outbox_ops_total',
+  help: 'Total outbox op submit attempts, by kind/priority/outcome',
+  labelNames: ['kind', 'priority', 'outcome'] as const, // outcome: confirmed|retry|failed
+  registers: [register],
+})
+
+export const outboxQueueDepth = new client.Gauge({
+  name: 'outbox_queue_depth',
+  help: 'Current outbox op count by status and priority',
+  labelNames: ['status', 'priority'] as const,
+  registers: [register],
+})
+
+export const outboxOpLatencySeconds = new client.Histogram({
+  name: 'outbox_op_latency_seconds',
+  help: 'Time from outbox op creation to confirmation, in seconds',
+  labelNames: ['kind'] as const,
+  buckets: [0.5, 1, 2, 5, 10, 30, 60, 120, 300],
+  registers: [register],
+})
+
+export const outboxFeeBumpTotal = new client.Counter({
+  name: 'outbox_fee_bump_total',
+  help: 'Total fee-bump resubmissions triggered by unconfirmed-too-long ops',
+  labelNames: ['kind'] as const,
+  registers: [register],
+})
+
+export const outboxStuckSubmitted = new client.Gauge({
+  name: 'outbox_stuck_submitted',
+  help: 'Ops SUBMITTED but unconfirmed longer than the configured timeout — the "lost in flight" alarm',
+  registers: [register],
+})
+
+export function recordOutboxOp(
+  kind: string,
+  priority: string,
+  outcome: 'confirmed' | 'retry' | 'failed'
+): void {
+  outboxOpsTotal.inc({ kind, priority, outcome })
+}
+
+export function updateOutboxQueueDepth(
+  rows: Array<{ status: string; priority: string; count: number }>
+): void {
+  outboxQueueDepth.reset()
+  for (const row of rows) {
+    outboxQueueDepth.set(
+      { status: row.status, priority: row.priority },
+      row.count
+    )
+  }
+}
+
+export function recordOutboxLatency(kind: string, seconds: number): void {
+  outboxOpLatencySeconds.observe({ kind }, seconds)
+}
+
+export function recordOutboxFeeBump(kind: string): void {
+  outboxFeeBumpTotal.inc({ kind })
+}
+
+export function updateOutboxStuckSubmitted(count: number): void {
+  outboxStuckSubmitted.set(count)
+}
+
 /**
  * Get metrics for Prometheus scraping
  */
