@@ -39,19 +39,30 @@ function getVaultContract(): Contract {
 }
 
 /**
- * Build contract invocation transaction
+ * Build contract invocation transaction.
+ *
+ * `feeMultiplier` scales the base fee (default 1x). The outbox dispatcher
+ * (#325) resubmits a congested-network op at a higher multiplier — fee-bump
+ * strategy documented in docs/OUTBOX.md — up to a configured cap.
  */
 async function buildContractCall(
   method: string,
   args: xdr.ScVal[],
-  sourcePublicKey: string = getAgentKeypair().publicKey()
+  sourcePublicKey: string = getAgentKeypair().publicKey(),
+  feeMultiplier: number = 1
 ): Promise<Transaction> {
   const server = getRpcServer()
   const contract = getVaultContract()
   const account = await getAccount(sourcePublicKey)
+  const fee =
+    feeMultiplier === 1
+      ? BASE_FEE
+      : String(
+          BigInt(BASE_FEE) * BigInt(Math.max(1, Math.round(feeMultiplier)))
+        )
 
   const tx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
+    fee,
     networkPassphrase: getNetworkPassphrase(),
   })
     .addOperation(contract.call(method, ...args))
@@ -71,9 +82,15 @@ function toContractAmount(amount: number): bigint {
 async function executeWriteContractCall(
   method: string,
   args: xdr.ScVal[],
-  signer: Keypair
+  signer: Keypair,
+  feeMultiplier: number = 1
 ): Promise<TransactionResult> {
-  const tx = await buildContractCall(method, args, signer.publicKey())
+  const tx = await buildContractCall(
+    method,
+    args,
+    signer.publicKey(),
+    feeMultiplier
+  )
 
   // Pre-Transaction Simulation & Validation (Issue #58)
   const simulation = await simulateTransaction(tx)
@@ -114,7 +131,8 @@ async function executeCustodialVaultOperation(
   userId: string,
   userAddress: string,
   amount: number,
-  assetSymbol: string
+  assetSymbol: string,
+  feeMultiplier: number = 1
 ): Promise<TransactionResult> {
   const signer = await getKeypairForUser(userId)
   const userScVal = nativeToScVal(userAddress, { type: 'address' })
@@ -124,7 +142,8 @@ async function executeCustodialVaultOperation(
   return executeWriteContractCall(
     method,
     [userScVal, amountScVal, assetScVal],
-    signer
+    signer,
+    feeMultiplier
   )
 }
 
@@ -185,7 +204,8 @@ export async function getActiveProtocol(): Promise<string> {
  */
 export async function triggerRebalance(
   protocol: string,
-  expectedApyBasisPoints: number
+  expectedApyBasisPoints: number,
+  feeMultiplier: number = 1
 ): Promise<TransactionResult> {
   const protocolScVal = nativeToScVal(protocol, { type: 'string' })
   const apyScVal = nativeToScVal(expectedApyBasisPoints, { type: 'u32' })
@@ -194,7 +214,8 @@ export async function triggerRebalance(
   return executeWriteContractCall(
     'rebalance',
     [protocolScVal, apyScVal],
-    keypair
+    keypair,
+    feeMultiplier
   )
 }
 
@@ -229,7 +250,8 @@ export async function updateTotalAssets(
 export async function payReferralReward(
   recipientAddress: string,
   amount: number,
-  assetSymbol: string
+  assetSymbol: string,
+  feeMultiplier: number = 1
 ): Promise<TransactionResult> {
   const recipientScVal = nativeToScVal(recipientAddress, { type: 'address' })
   const amountScVal = nativeToScVal(toContractAmount(amount), { type: 'i128' })
@@ -239,7 +261,8 @@ export async function payReferralReward(
   return executeWriteContractCall(
     config.referral.rewardContractMethod,
     [recipientScVal, amountScVal, assetScVal],
-    keypair
+    keypair,
+    feeMultiplier
   )
 }
 
@@ -259,14 +282,16 @@ export async function depositForUser(
   userId: string,
   userAddress: string,
   amount: number,
-  assetSymbol: string
+  assetSymbol: string,
+  feeMultiplier: number = 1
 ): Promise<TransactionResult> {
   return executeCustodialVaultOperation(
     'deposit',
     userId,
     userAddress,
     amount,
-    assetSymbol
+    assetSymbol,
+    feeMultiplier
   )
 }
 
@@ -286,14 +311,16 @@ export async function withdrawForUser(
   userId: string,
   userAddress: string,
   amount: number,
-  assetSymbol: string
+  assetSymbol: string,
+  feeMultiplier: number = 1
 ): Promise<TransactionResult> {
   return executeCustodialVaultOperation(
     'withdraw',
     userId,
     userAddress,
     amount,
-    assetSymbol
+    assetSymbol,
+    feeMultiplier
   )
 }
 

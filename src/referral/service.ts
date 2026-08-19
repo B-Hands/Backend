@@ -27,8 +27,10 @@ import db from '../db'
 import { config } from '../config'
 import { logger } from '../utils/logger'
 import { alertingService } from '../services/alerting'
-import { payReferralReward } from '../stellar/contract'
 import { getWalletByUserId } from '../stellar/wallet'
+import { enqueueOutboxOp } from '../outbox/service'
+import { dispatchOne } from '../outbox/dispatcher'
+import { deriveIdempotencyKey } from '../outbox/idempotency'
 
 type Db = typeof db | Prisma.TransactionClient
 
@@ -223,14 +225,22 @@ async function resolveRewardAddress(userId: string): Promise<string | null> {
 }
 
 /**
- * Pay one reward leg and record it as a distinctly-typed REFERRAL_REWARD
- * Transaction. Returns the Transaction.id, or throws so the caller leaves the
- * conversion retriable.
+ * Pay one reward leg through the durable outbox (#325) and record it as a
+ * distinctly-typed REFERRAL_REWARD Transaction. Returns the Transaction.id,
+ * or throws so the caller leaves the conversion retriable.
+ *
+ * The Transaction row and its OutboxOp intent are written in the same DB
+ * transaction — a crash between "persisted" and "submitted" leaves a durable,
+ * retriable record instead of nothing (idempotency key:
+ * REFERRAL_REWARD:<recipientUserId>:<conversionId>:<leg>, so re-running this
+ * for the same conversion leg is safe).
  */
 async function payOneReward(
   recipientUserId: string,
   amount: number,
-  network: Network
+  network: Network,
+  conversionId: string,
+  leg: 'owner' | 'referred'
 ): Promise<string> {
   const address = await resolveRewardAddress(recipientUserId)
   if (!address) {
@@ -238,22 +248,68 @@ async function payOneReward(
   }
 
   const asset = config.referral.rewardAsset
-  const result = await payReferralReward(address, amount, asset)
 
-  const tx = await db.transaction.create({
-    data: {
+  const pending = await db.$transaction(async (tx) => {
+    const transaction = await tx.transaction.create({
+      data: {
+        userId: recipientUserId,
+        type: TransactionType.REFERRAL_REWARD,
+        status: TransactionStatus.PENDING,
+        assetSymbol: asset,
+        amount: new Decimal(amount),
+        network,
+        memo: 'Referral reward',
+      },
+    })
+
+    const op = await enqueueOutboxOp(tx, {
+      idempotencyKey: deriveIdempotencyKey(
+        'REFERRAL_REWARD',
+        recipientUserId,
+        `${conversionId}:${leg}`
+      ),
       userId: recipientUserId,
-      txHash: result.hash,
-      type: TransactionType.REFERRAL_REWARD,
-      status: TransactionStatus.CONFIRMED,
-      assetSymbol: asset,
-      amount: new Decimal(amount),
-      network,
-      memo: 'Referral reward',
-      confirmedAt: new Date(),
-    },
+      kind: 'REFERRAL_REWARD',
+      actor: 'SYSTEM',
+      payload: {
+        method: 'referral_reward',
+        recipientAddress: address,
+        amount,
+        assetSymbol: asset,
+        conversionId,
+        leg,
+      },
+    })
+
+    return { transaction, opId: op.id }
   })
-  return tx.id
+
+  try {
+    const result = await dispatchOne(pending.opId)
+    const succeeded = !result.status || result.status === 'success'
+    await db.transaction.update({
+      where: { id: pending.transaction.id },
+      data: {
+        txHash: result.hash,
+        status: succeeded
+          ? TransactionStatus.CONFIRMED
+          : TransactionStatus.FAILED,
+        confirmedAt: succeeded ? new Date() : null,
+      },
+    })
+    if (!succeeded) {
+      throw new Error('On-chain reward submission returned status=failed')
+    }
+    return pending.transaction.id
+  } catch (err) {
+    await db.transaction
+      .update({
+        where: { id: pending.transaction.id },
+        data: { status: TransactionStatus.FAILED },
+      })
+      .catch(() => {})
+    throw err
+  }
 }
 
 /**
@@ -296,7 +352,9 @@ export async function payoutActivatedConversions(): Promise<{
         ownerRewardTxId = await payOneReward(
           ownerUserId,
           config.referral.ownerReward,
-          network
+          network,
+          conversion.id,
+          'owner'
         )
         await db.referralConversion.update({
           where: { id: conversion.id },
@@ -314,7 +372,9 @@ export async function payoutActivatedConversions(): Promise<{
         referredRewardTxId = await payOneReward(
           referredUserId,
           config.referral.referredReward,
-          network
+          network,
+          conversion.id,
+          'referred'
         )
         await db.referralConversion.update({
           where: { id: conversion.id },

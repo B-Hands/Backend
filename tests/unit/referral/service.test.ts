@@ -7,7 +7,6 @@
 //     the conversion ACTIVATED + retriable, and REWARDED requires every leg paid
 import db from '../../../src/db'
 import { alertingService } from '../../../src/services/alerting'
-import { payReferralReward } from '../../../src/stellar/contract'
 import { getWalletByUserId } from '../../../src/stellar/wallet'
 import {
   attributeSignup,
@@ -27,9 +26,6 @@ jest.mock('../../../src/utils/logger', () => ({
 jest.mock('../../../src/services/alerting', () => ({
   alertingService: { emit: jest.fn().mockResolvedValue({ sent: true }) },
 }))
-jest.mock('../../../src/stellar/contract', () => ({
-  payReferralReward: jest.fn(),
-}))
 jest.mock('../../../src/stellar/wallet', () => ({
   getWalletByUserId: jest.fn(),
 }))
@@ -46,9 +42,22 @@ jest.mock('../../../src/config', () => ({
   },
 }))
 
+// The outbox is a separate module with its own unit/integration coverage
+// (tests/unit/outbox/, tests/integration/outbox/) — here it is mocked as the
+// dependency boundary so this suite stays focused on referral bookkeeping:
+// did we enqueue/dispatch a durable op, not "does the dispatcher's retry
+// machinery work."
+const mockEnqueueOutboxOp = jest.fn()
+const mockDispatchOne = jest.fn()
+jest.mock('../../../src/outbox/service', () => ({
+  enqueueOutboxOp: (...args: unknown[]) => mockEnqueueOutboxOp(...args),
+}))
+jest.mock('../../../src/outbox/dispatcher', () => ({
+  dispatchOne: (...args: unknown[]) => mockDispatchOne(...args),
+}))
+
 const mockDb = db as any
 const mockEmit = alertingService.emit as jest.Mock
-const mockPay = payReferralReward as jest.Mock
 const mockGetWallet = getWalletByUserId as jest.Mock
 
 jest.mock('@prisma/client', () => {
@@ -88,7 +97,8 @@ beforeEach(() => {
     update: jest.fn(),
   }
   mockDb.user = { findUnique: jest.fn() }
-  mockDb.transaction = { create: jest.fn() }
+  mockDb.transaction = { create: jest.fn(), update: jest.fn() }
+  mockDb.$transaction = jest.fn((fn: (tx: any) => unknown) => fn(mockDb))
 })
 
 describe('attributeSignup', () => {
@@ -232,10 +242,15 @@ describe('payoutActivatedConversions', () => {
   beforeEach(() => {
     mockGetWallet.mockResolvedValue({ publicKey: 'GADDRESS' })
     mockDb.user.findUnique.mockResolvedValue({ network: 'MAINNET' })
-    mockPay.mockResolvedValue({ hash: 'onchainhash', status: 'success' })
+    mockEnqueueOutboxOp.mockResolvedValue({ id: 'op-1' })
+    mockDispatchOne.mockResolvedValue({
+      hash: 'onchainhash',
+      status: 'success',
+    })
     mockDb.transaction.create.mockImplementation(({ data }: any) => ({
       id: `tx-${data.userId}`,
     }))
+    mockDb.transaction.update.mockResolvedValue({})
     mockDb.referralConversion.update.mockResolvedValue({})
   })
 
@@ -247,19 +262,24 @@ describe('payoutActivatedConversions', () => {
     const res = await payoutActivatedConversions()
 
     expect(res.rewarded).toBe(1)
-    expect(mockPay).toHaveBeenCalledTimes(2)
+    expect(mockDispatchOne).toHaveBeenCalledTimes(2)
     const finalUpdate = mockDb.referralConversion.update.mock.calls.at(-1)[0]
     expect(finalUpdate.data.status).toBe('REWARDED')
   })
 
-  it('records payout as a distinct REFERRAL_REWARD transaction', async () => {
+  it('enqueues a distinct REFERRAL_REWARD transaction, then confirms it via the outbox', async () => {
     mockDb.referralConversion.findMany.mockResolvedValue([
       activatedConversion(),
     ])
     await payoutActivatedConversions()
+
     const createArg = mockDb.transaction.create.mock.calls[0][0]
     expect(createArg.data.type).toBe('REFERRAL_REWARD')
-    expect(createArg.data.status).toBe('CONFIRMED')
+    expect(createArg.data.status).toBe('PENDING')
+
+    const updateArg = mockDb.transaction.update.mock.calls[0][0]
+    expect(updateArg.data.status).toBe('CONFIRMED')
+    expect(updateArg.data.txHash).toBe('onchainhash')
   })
 
   it('is idempotent — skips a leg already paid', async () => {
@@ -267,15 +287,15 @@ describe('payoutActivatedConversions', () => {
       activatedConversion({ ownerRewardTxId: 'already-paid' }),
     ])
     await payoutActivatedConversions()
-    // Only the referred leg should be paid.
-    expect(mockPay).toHaveBeenCalledTimes(1)
+    // Only the referred leg should be dispatched.
+    expect(mockDispatchOne).toHaveBeenCalledTimes(1)
   })
 
   it('leaves conversion ACTIVATED + retriable when a leg fails, and does NOT reward', async () => {
     mockDb.referralConversion.findMany.mockResolvedValue([
       activatedConversion(),
     ])
-    mockPay.mockRejectedValueOnce(new Error('rpc timeout'))
+    mockDispatchOne.mockRejectedValueOnce(new Error('rpc timeout'))
 
     const res = await payoutActivatedConversions()
 
@@ -306,6 +326,6 @@ describe('payoutActivatedConversions', () => {
     const res = await payoutActivatedConversions()
 
     expect(res.rewarded).toBe(0)
-    expect(mockPay).not.toHaveBeenCalled()
+    expect(mockDispatchOne).not.toHaveBeenCalled()
   })
 })

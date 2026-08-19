@@ -12,13 +12,15 @@ import {
   UserStrategyPreferences,
 } from './types'
 import { scanAllProtocols, getCurrentOnChainApy } from './scanner'
-import { triggerRebalance as submitRebalance } from '../stellar/contract'
 import {
   MaxYieldStrategy,
   TargetAllocationStrategy,
   GoalTrackingStrategy,
 } from './strategies'
 import db from '../db'
+import { enqueueOutboxOp } from '../outbox/service'
+import { dispatchInBackground } from '../outbox/dispatcher'
+import { deriveIdempotencyKey } from '../outbox/idempotency'
 
 const DEFAULT_THRESHOLDS: RebalanceThresholds = {
   minimumImprovement: 0.5, // Must improve by at least 0.5%
@@ -210,10 +212,14 @@ export async function triggerRebalance(
       expectedApyBasisPoints,
     })
 
-    const onChainTransaction = await submitRebalance(
-      toProtocol,
-      expectedApyBasisPoints
-    )
+    // #325: a rebalance is a LOW-priority, durable, NON-BLOCKING outbox op —
+    // the loop enqueues the intent (transactionally with the Transaction row)
+    // and moves on without waiting for the on-chain round trip. The
+    // background dispatcher (src/outbox/dispatcher.ts) submits it on its own
+    // cadence, and the event listener confirms the linked Transaction row
+    // when the on-chain event arrives. txHash is therefore not known yet at
+    // this point — RebalanceDetails.txHash is left undefined.
+    let txHash: string | undefined
 
     if (positionIds.length > 0) {
       const representativePosition = await db.position.findFirst({
@@ -230,20 +236,42 @@ export async function triggerRebalance(
       })
 
       if (representativePosition) {
-        await db.transaction.create({
-          data: {
+        const opId = await db.$transaction(async (tx) => {
+          const transaction = await tx.transaction.create({
+            data: {
+              userId: representativePosition.userId,
+              positionId: representativePosition.id,
+              type: 'REBALANCE',
+              status: 'PENDING',
+              assetSymbol: representativePosition.assetSymbol,
+              amount,
+              network: representativePosition.user.network,
+              protocolName: toProtocol,
+              memo: `Agent rebalance from ${fromProtocol} to ${toProtocol}`,
+            } as any,
+          })
+
+          const op = await enqueueOutboxOp(tx, {
+            idempotencyKey: deriveIdempotencyKey(
+              'REBALANCE',
+              representativePosition.userId,
+              transaction.id
+            ),
             userId: representativePosition.userId,
-            positionId: representativePosition.id,
-            txHash: onChainTransaction.hash,
-            type: 'REBALANCE',
-            status: 'PENDING',
-            assetSymbol: representativePosition.assetSymbol,
-            amount,
-            network: representativePosition.user.network,
-            protocolName: toProtocol,
-            memo: `Agent rebalance from ${fromProtocol} to ${toProtocol}`,
-          } as any,
+            kind: 'REBALANCE',
+            actor: 'AGENT',
+            payload: {
+              method: 'rebalance',
+              toProtocol,
+              expectedApyBasisPoints,
+              transactionId: transaction.id,
+            },
+          })
+
+          return op.id
         })
+
+        dispatchInBackground(opId)
       } else {
         logger.warn('No position found to persist rebalance transaction', {
           fromProtocol,
@@ -257,7 +285,7 @@ export async function triggerRebalance(
       fromProtocol,
       toProtocol,
       amount,
-      txHash: onChainTransaction.hash,
+      txHash,
       timestamp: new Date(),
       improvedBy: comparison.improvement,
     }
@@ -302,8 +330,7 @@ export async function triggerRebalance(
       })
     }
 
-    logger.info('Rebalance successful', {
-      txHash: onChainTransaction.hash,
+    logger.info('Rebalance queued (durable, dispatched asynchronously)', {
       duration,
       improvedBy: comparison.improvement.toFixed(2),
     })

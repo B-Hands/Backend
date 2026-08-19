@@ -67,6 +67,39 @@ enum DeadLetterEventStatus {
   RESOLVED
 }
 
+// #325 — durable outbox for on-chain money movements.
+enum OutboxOpKind {
+  DEPOSIT
+  WITHDRAW
+  REBALANCE
+  RECURRING_DEPOSIT
+  REFERRAL_REWARD
+  YIELD_CLAIM
+}
+
+enum OutboxOpActor {
+  USER
+  AGENT
+  SYSTEM
+}
+
+// CRITICAL: user withdrawals (capital leaving the platform).
+// NORMAL: recurring deposits / referral rewards.
+// LOW: agent-triggered rebalances.
+enum OutboxPriority {
+  CRITICAL
+  NORMAL
+  LOW
+}
+
+enum OutboxOpStatus {
+  PENDING
+  SUBMITTED
+  CONFIRMED
+  FAILED
+  CANCELLED
+}
+
 enum FiatDirection {
   ON_RAMP
   OFF_RAMP
@@ -462,6 +495,57 @@ model DeadLetterEvent {
   @@index([txHash])
   @@index([createdAt])
   @@map("dead_letter_events")
+}
+
+// Durable outbox + prioritized dispatcher for on-chain money movements (#325).
+// This is the single choke point every write to the vault contract must pass
+// through — src/outbox/executors.ts is the only module besides
+// src/stellar/contract.ts itself allowed to call the raw write functions
+// (enforced by tests/unit/outbox/structural.test.ts).
+model OutboxOp {
+  id String @id @default(uuid())
+
+  // Deterministic per-caller anchor (e.g. "DEPOSIT:<userId>:<transactionId>").
+  // Guarantees at-most-once submission across dispatcher crashes/restarts —
+  // see src/outbox/idempotency.ts.
+  idempotencyKey String @unique
+
+  userId String
+  kind   OutboxOpKind
+  actor  OutboxOpActor
+
+  // The exact, validated operation: { method, params, asset, amount,
+  // destination, ... } — never a key, never unvalidated user input.
+  payload Json
+
+  priority OutboxPriority
+  status   OutboxOpStatus @default(PENDING)
+
+  // Set once the dispatcher successfully submits to the network.
+  txHash String? @unique
+
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime?
+  error         String?   @db.Text
+
+  submittedAt DateTime?
+  confirmedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Which signer (Stellar public key) this op executes under. The dispatcher
+  // serializes ops sharing a signer so sequence-number ordering on that
+  // account is never raced (see src/outbox/signerLock.ts). Populated at
+  // claim time, once the signer is known.
+  signerPublicKey String?
+
+  @@index([status, priority, createdAt])
+  @@index([userId])
+  @@index([kind])
+  @@index([signerPublicKey, status])
+  @@index([status, nextAttemptAt])
+  @@map("outbox_ops")
 }
 
 model CustodialWallet {

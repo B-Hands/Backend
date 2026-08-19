@@ -28,6 +28,10 @@ export const ADMIN_SCOPES = [
   'keys:write',
   'fiat:read',
   'fiat:write',
+  // #325 — durable outbox admin tooling (list/inspect ops, force-retry FAILED,
+  // cancel unsent PENDING ops).
+  'outbox:read',
+  'outbox:write',
   'super',
 ] as const
 export type AdminScope = (typeof ADMIN_SCOPES)[number]

@@ -1,11 +1,104 @@
 import { Request, Response } from 'express'
 import { Transaction } from '@prisma/client'
 import db from '../db'
-import { depositForUser, withdrawForUser } from '../stellar/contract'
 import { formatDepositReply, formatWithdrawReply } from '../whatsapp/formatters'
-import { sendNotFound, sendConflict, sendUnauthorized } from '../utils/errors'
+import { sendNotFound, sendUnauthorized } from '../utils/errors'
 import { logger } from '../utils/logger'
 import { dispatchWebhookEvent } from '../services/webhookDispatcher'
+import { enqueueOutboxOp } from '../outbox/service'
+import { dispatchOne } from '../outbox/dispatcher'
+import { deriveIdempotencyKey } from '../outbox/idempotency'
+import { OutboxOpKind } from '../outbox/types'
+
+/**
+ * Persist the Transaction row (PENDING, no hash yet) and its outbox intent in
+ * the same DB transaction (#325) — "intent persisted" and "business state
+ * written" now commit or roll back together, then dispatch it inline so the
+ * HTTP/job caller still gets a synchronous CONFIRMED/FAILED result exactly as
+ * before this change. If the process crashes between commit and submission,
+ * the durable OutboxOp row survives for the background dispatcher
+ * (src/outbox/dispatcher.ts) to pick up on the next sweep.
+ */
+async function enqueueAndDispatch(params: {
+  kind: Extract<OutboxOpKind, 'DEPOSIT' | 'WITHDRAW'>
+  userId: string
+  userAddress: string
+  amount: number
+  assetSymbol: string
+  network: Transaction['network']
+  type: 'DEPOSIT' | 'WITHDRAWAL'
+  protocolName?: string
+  memo?: string
+  actingAsUserId?: string | null
+}): Promise<Transaction> {
+  const pending = await db.$transaction(async (tx) => {
+    const transaction = await tx.transaction.create({
+      data: {
+        userId: params.userId,
+        actingAsUserId: params.actingAsUserId ?? null,
+        type: params.type,
+        status: 'PENDING',
+        assetSymbol: params.assetSymbol,
+        amount: params.amount,
+        network: params.network,
+        protocolName: params.protocolName,
+        memo: params.memo,
+      },
+    })
+
+    const op = await enqueueOutboxOp(tx, {
+      idempotencyKey: deriveIdempotencyKey(
+        params.kind,
+        params.userId,
+        transaction.id
+      ),
+      userId: params.userId,
+      kind: params.kind,
+      actor: 'USER',
+      payload:
+        params.kind === 'DEPOSIT'
+          ? {
+              method: 'deposit',
+              userId: params.userId,
+              userAddress: params.userAddress,
+              amount: params.amount,
+              assetSymbol: params.assetSymbol,
+              transactionId: transaction.id,
+            }
+          : {
+              method: 'withdraw',
+              userId: params.userId,
+              userAddress: params.userAddress,
+              amount: params.amount,
+              assetSymbol: params.assetSymbol,
+              transactionId: transaction.id,
+            },
+    })
+
+    return { transaction, opId: op.id }
+  })
+
+  try {
+    const result = await dispatchOne(pending.opId)
+    const succeeded = !result.status || result.status === 'success'
+    return db.transaction.update({
+      where: { id: pending.transaction.id },
+      data: {
+        txHash: result.hash,
+        status: succeeded ? 'CONFIRMED' : 'FAILED',
+        confirmedAt: succeeded ? new Date() : null,
+      },
+    })
+  } catch (err) {
+    await db.transaction
+      .update({
+        where: { id: pending.transaction.id },
+        data: { status: 'FAILED' },
+      })
+      .catch(() => {})
+    throw err
+  }
+}
 
 export interface ExecuteDepositParams {
   userId: string
@@ -46,47 +139,25 @@ export async function executeDeposit(
     assetSymbol,
   })
 
-  const onChainResult = await depositForUser(
+  const transaction = await enqueueAndDispatch({
+    kind: 'DEPOSIT',
     userId,
-    walletAddress,
+    userAddress: walletAddress,
     amount,
-    assetSymbol
-  )
+    assetSymbol,
+    network: user.network,
+    type: 'DEPOSIT',
+    memo,
+    actingAsUserId,
+  })
 
   logger.info('On-chain deposit completed', {
     userId,
-    txHash: onChainResult.hash,
-    status: onChainResult.status,
+    txHash: transaction.txHash,
+    status: transaction.status,
   })
 
-  const transactionStatus =
-    onChainResult.status === 'success' ? 'CONFIRMED' : 'FAILED'
-
-  const existing = await db.transaction.findUnique({
-    where: { txHash: onChainResult.hash },
-    select: { id: true },
-  })
-
-  if (existing) {
-    throw new Error('Duplicate transaction hash')
-  }
-
-  const transaction = await db.transaction.create({
-    data: {
-      userId,
-      actingAsUserId: actingAsUserId ?? null,
-      txHash: onChainResult.hash,
-      type: 'DEPOSIT',
-      status: transactionStatus,
-      assetSymbol,
-      amount,
-      network: user.network,
-      memo,
-      confirmedAt: transactionStatus === 'CONFIRMED' ? new Date() : null,
-    },
-  })
-
-  if (transactionStatus === 'CONFIRMED') {
+  if (transaction.status === 'CONFIRMED') {
     dispatchWebhookEvent('transaction.confirmed', {
       txHash: transaction.txHash,
       type: 'DEPOSIT',
@@ -97,7 +168,10 @@ export async function executeDeposit(
     }).catch(() => {})
   }
 
-  return { transaction, status: transactionStatus }
+  return {
+    transaction,
+    status: transaction.status as 'CONFIRMED' | 'FAILED',
+  }
 }
 
 export async function processOnChainTransaction(
@@ -137,50 +211,28 @@ export async function processOnChainTransaction(
       assetSymbol,
     })
 
-    const onChainTransaction = await withdrawForUser(
+    const transaction = await enqueueAndDispatch({
+      kind: 'WITHDRAW',
       userId,
-      req.auth!.walletAddress,
+      userAddress: req.auth!.walletAddress,
       amount,
-      assetSymbol
-    )
+      assetSymbol,
+      network: user.network,
+      type,
+      protocolName,
+      memo,
+      actingAsUserId,
+    })
 
     logger.info('On-chain withdrawal completed', {
       correlationId: req.correlationId,
       type,
       userId,
-      txHash: onChainTransaction.hash,
-      status: onChainTransaction.status,
+      txHash: transaction.txHash,
+      status: transaction.status,
     })
 
-    const transactionStatus =
-      onChainTransaction.status === 'success' ? 'CONFIRMED' : 'FAILED'
-
-    const existing = await db.transaction.findUnique({
-      where: { txHash: onChainTransaction.hash },
-      select: { id: true },
-    })
-
-    if (existing) {
-      return sendConflict(res, 'Duplicate transaction hash')
-    }
-
-    const transaction = await db.transaction.create({
-      data: {
-        userId,
-        actingAsUserId,
-        txHash: onChainTransaction.hash,
-        type,
-        status: transactionStatus,
-        assetSymbol,
-        amount,
-        network: user.network,
-        protocolName,
-        memo,
-        confirmedAt: transactionStatus === 'CONFIRMED' ? new Date() : null,
-      },
-    })
-
-    if (transactionStatus === 'CONFIRMED') {
+    if (transaction.status === 'CONFIRMED') {
       dispatchWebhookEvent('transaction.confirmed', {
         txHash: transaction.txHash,
         type,

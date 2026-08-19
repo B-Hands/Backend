@@ -2771,6 +2771,213 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  # ── Durable outbox (#325) ────────────────────────────────────────────────────
+  /api/v1/admin/outbox:
+    get:
+      tags: [admin]
+      operationId: adminListOutboxOps
+      summary: List/query durable outbox ops
+      description: |
+        Lists on-chain money-movement intents queued through the durable
+        outbox. See docs/OUTBOX.md. Requires admin scope `outbox:read`.
+      security:
+        - AdminToken: []
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [PENDING, SUBMITTED, CONFIRMED, FAILED, CANCELLED]
+        - in: query
+          name: kind
+          schema:
+            type: string
+            enum: [DEPOSIT, WITHDRAW, REBALANCE, RECURRING_DEPOSIT, REFERRAL_REWARD, YIELD_CLAIM]
+        - in: query
+          name: priority
+          schema:
+            type: string
+            enum: [CRITICAL, NORMAL, LOW]
+        - in: query
+          name: userId
+          schema:
+            type: string
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+            maximum: 500
+        - in: query
+          name: offset
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Outbox ops matching the filter
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      ops:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/OutboxOp'
+                      total:
+                        type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/admin/outbox/stats:
+    get:
+      tags: [admin]
+      operationId: adminGetOutboxStats
+      summary: Outbox queue depth by status/priority
+      description: |
+        Throughput view over the outbox queue. Requires admin scope `outbox:read`.
+      security:
+        - AdminToken: []
+      responses:
+        '200':
+          description: Queue depth grouped by status and priority
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      stats:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            status:
+                              type: string
+                            priority:
+                              type: string
+                            count:
+                              type: integer
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/admin/outbox/{id}:
+    get:
+      tags: [admin]
+      operationId: adminGetOutboxOp
+      summary: Inspect a single outbox op
+      description: Requires admin scope `outbox:read`.
+      security:
+        - AdminToken: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The outbox op
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/OutboxOp'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Outbox op not found
+
+  /api/v1/admin/outbox/{id}/retry:
+    post:
+      tags: [admin]
+      operationId: adminRetryOutboxOp
+      summary: Force a FAILED op back to PENDING
+      description: |
+        Clears backoff and re-queues a terminally FAILED op for the
+        dispatcher to re-attempt. Requires admin scope `outbox:write`.
+      security:
+        - AdminToken: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Op returned to PENDING
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/OutboxOp'
+        '400':
+          description: Op is not FAILED
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/admin/outbox/{id}/cancel:
+    post:
+      tags: [admin]
+      operationId: adminCancelOutboxOp
+      summary: Cancel an unsent op
+      description: |
+        Cancels a PENDING op. A SUBMITTED op is already on-chain and cannot
+        be cancelled. Requires admin scope `outbox:write`.
+      security:
+        - AdminToken: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Op cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/OutboxOp'
+        '400':
+          description: Op is not PENDING (already submitted, confirmed, failed, or cancelled)
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
   # ── Metrics ────────────────────────────────────────────────────────────────
   /metrics:
     get:
@@ -3957,6 +4164,58 @@ components:
           type: string
           nullable: true
         createdAt:
+          type: string
+          format: date-time
+
+    OutboxOp:
+      type: object
+      description: A durable on-chain money-movement intent (#325). See docs/OUTBOX.md.
+      properties:
+        id:
+          type: string
+        idempotencyKey:
+          type: string
+        userId:
+          type: string
+        kind:
+          type: string
+          enum: [DEPOSIT, WITHDRAW, REBALANCE, RECURRING_DEPOSIT, REFERRAL_REWARD, YIELD_CLAIM]
+        actor:
+          type: string
+          enum: [USER, AGENT, SYSTEM]
+        priority:
+          type: string
+          enum: [CRITICAL, NORMAL, LOW]
+        status:
+          type: string
+          enum: [PENDING, SUBMITTED, CONFIRMED, FAILED, CANCELLED]
+        txHash:
+          type: string
+          nullable: true
+        attempts:
+          type: integer
+        nextAttemptAt:
+          type: string
+          format: date-time
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        submittedAt:
+          type: string
+          format: date-time
+          nullable: true
+        confirmedAt:
+          type: string
+          format: date-time
+          nullable: true
+        signerPublicKey:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
           type: string
           format: date-time
 

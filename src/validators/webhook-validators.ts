@@ -42,6 +42,9 @@ const WEBHOOK_EVENTS = [
   // is affected. Never carries the publisher's identity.
   'strategy.updated',
   'strategy.unpublished',
+  // Durable outbox (#325): a money-moving op exhausted its retries and moved
+  // to the terminal FAILED state — see docs/OUTBOX.md.
+  'outbox.op_failed',
 ] as const
 
 export const createWebhookSchema = z.object({

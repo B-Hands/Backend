@@ -53,6 +53,7 @@ import { scheduleAlertRules } from './jobs/alertRules'
 import { scheduleStrategyMetrics } from './jobs/strategyMetrics'
 import { scheduleAllocationSuggestions } from './jobs/allocationSuggestions'
 import { scheduleAttribution } from './jobs/attribution'
+import { scheduleOutboxDispatcher } from './outbox/dispatcher'
 // Was never imported or started, so ProtocolRiskScore rows were never refreshed
 // after their first backfill. That matters beyond staleness: risk-ceiling
 // filtering is fail-closed (applyRiskCeiling treats an unknown score as
@@ -119,6 +120,7 @@ let strategyMetricsHandle: NodeJS.Timeout | null = null
 let allocationSuggestionsHandle: NodeJS.Timeout | null = null
 let protocolRiskScoringHandle: NodeJS.Timeout | null = null
 let attributionHandle: NodeJS.Timeout | null = null
+let outboxDispatcherHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
@@ -397,6 +399,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(attributionHandle)
     attributionHandle = null
     logger.info('[Shutdown] Performance attribution timer cleared')
+  }
+
+  if (outboxDispatcherHandle) {
+    clearInterval(outboxDispatcherHandle)
+    outboxDispatcherHandle = null
+    logger.info('[Shutdown] Outbox dispatcher timer cleared')
   }
 
   if (!httpServer) {
