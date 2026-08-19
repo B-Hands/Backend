@@ -307,13 +307,41 @@ export async function getMarketplace(input: MarketplaceQueryInput): Promise<{
     }),
   ])
 
+  // vsBenchmark (#320) is read alongside, never sorted on: PublishedStrategyMetric
+  // stays the single ORDER BY/skip/take source (the DoS-prevention rationale
+  // above), and this is a bounded follow-up lookup over the current page only
+  // (at most `limit` ids), not a per-request recompute across every publisher.
+  const strategyIds = rows.map((r) => r.publishedStrategy.id)
+  const attributions =
+    strategyIds.length > 0
+      ? await db.strategyAttribution.findMany({
+          where: { publishedStrategyId: { in: strategyIds }, windowDays },
+          select: {
+            publishedStrategyId: true,
+            portfolioReturn: true,
+            benchmarkReturn: true,
+          },
+        })
+      : []
+  const vsBenchmarkByStrategyId = new Map(
+    attributions.map((a) => [
+      a.publishedStrategyId,
+      a.portfolioReturn - a.benchmarkReturn,
+    ])
+  )
+
+  const entries = rows.map((row) => ({
+    ...row,
+    vsBenchmark: vsBenchmarkByStrategyId.get(row.publishedStrategy.id) ?? null,
+  }))
+
   return {
     page: input.page,
     limit: input.limit,
     total,
     window: input.window,
     sortBy: input.sortBy,
-    entries: rows,
+    entries,
   }
 }
 

@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import db from '../db'
 import { requireAuth } from '../middleware/authenticate'
+import { mapPortfolioAttributionToResponse } from '../utils/api-formatters'
 
 const router = Router()
 
@@ -11,6 +12,25 @@ const periodSchema = z.object({
 
 function periodToDays(period: string): number {
   return period === '7d' ? 7 : period === '30d' ? 30 : 90
+}
+
+/**
+ * `window` accepts 30d/90d only, same retention-honest rule as the strategy
+ * marketplace (src/validators/strategy-validators.ts): YieldSnapshot rows are
+ * hard-deleted past 90 days (src/agent/snapshotter.ts), so a longer window
+ * has no data behind it.
+ */
+const attributionQuerySchema = z.object({
+  window: z
+    .enum(['30d', '90d'], {
+      error:
+        'window must be "30d" or "90d". Longer windows are unavailable because yield snapshots are retained for 90 days.',
+    })
+    .default('30d'),
+})
+
+function attributionWindowToDays(window: '30d' | '90d'): number {
+  return window === '30d' ? 30 : 90
 }
 
 /**
@@ -163,6 +183,50 @@ router.get('/protocol-performance', async (req: Request, res: Response) => {
   return res
     .status(200)
     .json({ period: parsed.data.period, protocols: Object.values(byProtocol) })
+})
+
+/**
+ * GET /analytics/attribution
+ *
+ * Benchmark-relative Brinson attribution for the caller's OWN portfolio —
+ * owner-scoped via req.auth.userId, never a path param (#320). Reads the
+ * precomputed PortfolioAttribution row rather than recomputing per request;
+ * see src/jobs/attribution.ts and src/analytics/attribution.ts.
+ *
+ * A 200 with `computed: false` (not a 404) is returned when nothing has been
+ * precomputed yet for this user/window — "no attribution yet" is a normal
+ * state for a very new account, not a missing resource, mirroring the
+ * `{ follow: null }` convention in the strategy marketplace.
+ */
+router.get('/attribution', requireAuth, async (req: Request, res: Response) => {
+  const userId = req.auth!.userId
+  const parsed = attributionQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    return res
+      .status(400)
+      .json({ error: 'Validation error', details: parsed.error.flatten() })
+  }
+
+  const windowDays = attributionWindowToDays(parsed.data.window)
+
+  const row = await db.portfolioAttribution.findUnique({
+    where: { userId_windowDays: { userId, windowDays } },
+  })
+
+  if (!row) {
+    return res.status(200).json({
+      userId,
+      window: parsed.data.window,
+      computed: false,
+    })
+  }
+
+  return res.status(200).json({
+    userId,
+    window: parsed.data.window,
+    computed: true,
+    ...mapPortfolioAttributionToResponse(row),
+  })
 })
 
 export default router

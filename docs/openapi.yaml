@@ -1844,6 +1844,87 @@ paths:
         '400':
           $ref: '#/components/responses/BadRequest'
 
+  /api/v1/analytics/attribution:
+    get:
+      tags: [analytics]
+      operationId: getPerformanceAttribution
+      summary: Get benchmark-relative performance attribution
+      description: >
+        Returns a Brinson-style, benchmark-relative decomposition of the
+        caller's OWN portfolio return into allocation and selection effects,
+        precomputed by a scheduled job and read from the persisted
+        `PortfolioAttribution` row — never recomputed per request.
+
+
+        The benchmark (v1) is the equal-weighted average of available
+        protocol APY history (or a configured subset); `benchmarkVersion`
+        names which one produced this report. `reconciled` is false, and
+        `reconciliationGap` non-zero, when the linked allocation + selection +
+        unattributed figures could not be made to match the actual
+        portfolio-vs-benchmark excess return (e.g. a period with a total
+        wipeout) — the gap is reported explicitly rather than silently
+        absorbed.
+
+
+        `computed: false` (still a 200, not a 404) means nothing has been
+        precomputed yet for this user/window — a normal state for a new
+        account, not a missing resource.
+
+
+        `window` accepts `30d` and `90d` only, for the same reason as the
+        strategy marketplace: yield snapshots are retained for 90 days.
+      security:
+        - BearerAuth: []
+      parameters:
+        - in: query
+          name: window
+          schema:
+            type: string
+            enum: ['30d', '90d']
+            default: '30d'
+          description: Statistics window. Longer windows are rejected (90-day snapshot retention).
+      responses:
+        '200':
+          description: The caller's performance attribution, or an unattributed placeholder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioAttributionResponse'
+              examples:
+                computed:
+                  value:
+                    userId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                    window: 30d
+                    computed: true
+                    windowDays: 30
+                    portfolioReturn: 0.083
+                    benchmarkReturn: 0.061
+                    vsBenchmark: 0.022
+                    allocationEffect: 0.009
+                    selectionEffect: 0.013
+                    unattributedEffect: 0
+                    reconciliationGap: 0.0000001
+                    reconciled: true
+                    benchmarkVersion: 'equal-weight-v1:all'
+                    sectors:
+                      - sector: Aave
+                        portfolioWeight: 0.6
+                        benchmarkWeight: 0.33
+                        portfolioReturn: 0.09
+                        benchmarkReturn: 0.05
+                        allocationEffect: 0.006
+                        selectionEffect: 0.011
+                    computedAt: '2026-06-30T00:00:00.000Z'
+                notYetComputed:
+                  value:
+                    userId: a1b2c3d4-e5f6-7890-abcd-ef1234567890
+                    window: 30d
+                    computed: false
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   # ── Stellar ────────────────────────────────────────────────────────────────
   /api/v1/stellar/metrics:
     get:
@@ -4518,6 +4599,16 @@ components:
         computedAt:
           type: string
           format: date-time
+        vsBenchmark:
+          type: number
+          nullable: true
+          description: >
+            Benchmark-relative return (#320): this strategy's portfolio
+            return minus the benchmark's return over the window, as a decimal
+            fraction. Null when attribution has not been computed yet for this
+            strategy/window. Lets a leaderboard viewer distinguish a strategy
+            that beat the market from one that merely took on more risk to
+            match it — apy/sharpe alone cannot.
 
     StrategyMarketplaceResponse:
       type: object
@@ -4539,6 +4630,99 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/StrategyMarketplaceEntry'
+
+    SectorAttribution:
+      type: object
+      description: >
+        One protocol's (sector's) contribution within an attribution report
+        (#320). A sector may appear with a benchmark weight but zero
+        portfolio weight (the portfolio never held it) or vice versa — both
+        are reported, never dropped.
+      required:
+        - sector
+        - portfolioWeight
+        - benchmarkWeight
+        - allocationEffect
+        - selectionEffect
+      properties:
+        sector:
+          type: string
+          description: Protocol name — the v1 definition of "sector".
+        portfolioWeight:
+          type: number
+          description: Time-averaged share of the portfolio held in this sector over the window (0-1).
+        benchmarkWeight:
+          type: number
+          description: Time-averaged benchmark weight for this sector over the window (0-1).
+        portfolioReturn:
+          type: number
+          nullable: true
+          description: Compounded return of this sector within the portfolio; null if never held with a computable return.
+        benchmarkReturn:
+          type: number
+          nullable: true
+          description: Compounded benchmark return for this sector; null if the benchmark never had data for it.
+        allocationEffect:
+          type: number
+          description: Linked contribution from over/underweighting this sector relative to the benchmark.
+        selectionEffect:
+          type: number
+          description: Linked contribution from this sector's own return beating or lagging the benchmark's.
+
+    PortfolioAttributionResponse:
+      type: object
+      description: >
+        Benchmark-relative Brinson attribution for one subject/window (#320).
+        Effects are relative figures only — never an absolute currency
+        amount, matching the anonymization discipline used for published
+        strategies.
+      required: [userId, window, computed]
+      properties:
+        userId:
+          type: string
+        window:
+          type: string
+          enum: ['30d', '90d']
+        computed:
+          type: boolean
+          description: False when nothing has been precomputed yet for this user/window — a normal state, not an error.
+        windowDays:
+          type: integer
+          enum: [30, 90]
+        portfolioReturn:
+          type: number
+          description: Compounded portfolio return over the window (decimal fraction).
+        benchmarkReturn:
+          type: number
+          description: Compounded benchmark return over the window (decimal fraction).
+        vsBenchmark:
+          type: number
+          description: portfolioReturn - benchmarkReturn.
+        allocationEffect:
+          type: number
+          description: Linked total allocation effect across the window.
+        selectionEffect:
+          type: number
+          description: Linked total selection effect across the window (interaction folded in — see docs/PERFORMANCE_ATTRIBUTION.md).
+        unattributedEffect:
+          type: number
+          description: Linked contribution from sectors/periods with no benchmark comparator — never fabricated as allocation or selection.
+        reconciliationGap:
+          type: number
+          description: (portfolioReturn - benchmarkReturn) - (allocationEffect + selectionEffect + unattributedEffect).
+        reconciled:
+          type: boolean
+          description: False when reconciliationGap exceeds the documented tolerance — reported explicitly rather than silently forced to match.
+        benchmarkVersion:
+          type: string
+          description: Which benchmark definition/protocol subset produced this report.
+        sectors:
+          type: array
+          items:
+            $ref: '#/components/schemas/SectorAttribution'
+        computedAt:
+          type: string
+          format: date-time
 
     StrategyFollow:
       type: object

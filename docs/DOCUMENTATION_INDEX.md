@@ -11,6 +11,7 @@
 - **[TAX_REPORT.md](TAX_REPORT.md)** - Tax reporting & FIFO cost-basis lot tracking (#284)
 - **[STRATEGY_MARKETPLACE.md](STRATEGY_MARKETPLACE.md)** - Strategy marketplace / opt-in copy-trading: metric formula, eligibility gate, privacy & custody boundaries (#285)
 - **[PORTFOLIO_OPTIMIZATION.md](PORTFOLIO_OPTIMIZATION.md)** - Portfolio optimization & allocation suggestions: objective, λ mapping, estimation method, advisory invariant, limitations (#322)
+- **[PERFORMANCE_ATTRIBUTION.md](PERFORMANCE_ATTRIBUTION.md)** - Benchmark-relative Brinson attribution: allocation/selection effects, Cariño linking, benchmark definition, `vsBenchmark` on the marketplace (#320)
 
 ### For DevOps/Deployment
 

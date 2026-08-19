@@ -81,6 +81,9 @@ beforeEach(() => {
     count: jest.fn().mockResolvedValue(0),
     findMany: jest.fn().mockResolvedValue([]),
   }
+  mockDb.strategyAttribution = {
+    findMany: jest.fn().mockResolvedValue([]),
+  }
   mockDispatch.mockResolvedValue(undefined)
   mockWhatsApp.mockResolvedValue('SM123')
 })
@@ -465,6 +468,68 @@ describe('getMarketplace', () => {
         .publishedStrategy.select
     expect(select).not.toHaveProperty('userId')
     expect(select).not.toHaveProperty('user')
+  })
+
+  it('merges vsBenchmark from StrategyAttribution without disturbing the SQL sort', async () => {
+    mockDb.publishedStrategyMetric.findMany.mockResolvedValue([
+      {
+        apy: 12,
+        sharpe: 1.2,
+        sampleCount: 40,
+        trackRecordDays: 45,
+        windowDays: 30,
+        computedAt: new Date(),
+        publishedStrategy: { id: STRATEGY_ID, label: 'Steady yield' },
+      },
+    ])
+    mockDb.strategyAttribution.findMany.mockResolvedValue([
+      {
+        publishedStrategyId: STRATEGY_ID,
+        portfolioReturn: 0.08,
+        benchmarkReturn: 0.05,
+      },
+    ])
+
+    const result = await getMarketplace({
+      sortBy: 'sharpe',
+      window: '30d',
+      page: 1,
+      limit: 10,
+    })
+
+    expect(mockDb.strategyAttribution.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          publishedStrategyId: { in: [STRATEGY_ID] },
+          windowDays: 30,
+        },
+      })
+    )
+    expect(result.entries[0].vsBenchmark).toBeCloseTo(0.03, 12)
+  })
+
+  it('reports vsBenchmark as null when attribution has not been computed for a strategy yet', async () => {
+    mockDb.publishedStrategyMetric.findMany.mockResolvedValue([
+      {
+        apy: 12,
+        sharpe: 1.2,
+        sampleCount: 40,
+        trackRecordDays: 45,
+        windowDays: 30,
+        computedAt: new Date(),
+        publishedStrategy: { id: STRATEGY_ID, label: 'Steady yield' },
+      },
+    ])
+    // strategyAttribution.findMany resolves [] via the default beforeEach mock.
+
+    const result = await getMarketplace({
+      sortBy: 'sharpe',
+      window: '30d',
+      page: 1,
+      limit: 10,
+    })
+
+    expect(result.entries[0].vsBenchmark).toBeNull()
   })
 })
 

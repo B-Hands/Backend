@@ -103,6 +103,9 @@ beforeEach(() => {
     count: jest.fn().mockResolvedValue(0),
     findMany: jest.fn().mockResolvedValue([]),
   }
+  mockDb.strategyAttribution = {
+    findMany: jest.fn().mockResolvedValue([]),
+  }
 })
 
 describe('GET /api/v1/strategies/marketplace — anonymity', () => {

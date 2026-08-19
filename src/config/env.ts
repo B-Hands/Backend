@@ -508,6 +508,27 @@ export const config = {
      */
     riskFreeRate: parseFloat(process.env.STRATEGY_RISK_FREE_RATE || '0'),
   },
+  attribution: {
+    /**
+     * Interval between performance-attribution recomputations in ms (default:
+     * 6 hours, matching strategyMarketplace). Inputs are daily
+     * YieldSnapshot/ProtocolRate series, so faster buys nothing but load. See
+     * docs/PERFORMANCE_ATTRIBUTION.md.
+     */
+    intervalMs: parseInt(process.env.ATTRIBUTION_INTERVAL_MS || '21600000'),
+    /**
+     * The v1 benchmark is the equal-weighted average of every protocol with
+     * ProtocolRate history. A comma-separated protocol-name subset narrows
+     * that universe (e.g. "Aave,Blend" for a stablecoin-only benchmark);
+     * empty/unset means every protocol. Read at compute time, and the
+     * resulting `benchmarkVersion` on each report names which subset was
+     * used, so a later config change never silently reinterprets old rows.
+     */
+    benchmarkProtocols: (process.env.ATTRIBUTION_BENCHMARK_PROTOCOLS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  },
   allocationSuggestions: {
     /**
      * Interval between precomputed allocation-suggestion refreshes in ms

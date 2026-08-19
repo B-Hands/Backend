@@ -43,6 +43,46 @@ export const mapMarketplaceEntryToResponse = (metric: any) => ({
   sampleCount: metric.sampleCount,
   trackRecordDays: metric.trackRecordDays,
   computedAt: metric.computedAt.toISOString(),
+  // Benchmark-relative figure (#320): portfolioReturn - benchmarkReturn over the
+  // window, from StrategyAttribution. Null when attribution has not been
+  // computed for this strategy/window yet — never fabricated. Merged onto the
+  // metric row by src/strategy/service.ts's getMarketplace before this mapper
+  // runs; still only ever a relative figure, never an absolute balance.
+  vsBenchmark: metric.vsBenchmark ?? null,
+})
+
+/**
+ * One sector row of a performance-attribution breakdown (#320). Shared by both
+ * the owner-scoped portfolio endpoint and the marketplace's vsBenchmark path.
+ */
+const mapSectorAttribution = (sector: any) => ({
+  sector: sector.sector,
+  portfolioWeight: sector.portfolioWeight,
+  benchmarkWeight: sector.benchmarkWeight,
+  portfolioReturn: sector.portfolioReturn,
+  benchmarkReturn: sector.benchmarkReturn,
+  allocationEffect: sector.allocationEffect,
+  selectionEffect: sector.selectionEffect,
+})
+
+/**
+ * A precomputed PortfolioAttribution/StrategyAttribution row (#320). Never
+ * carries userId — the caller already knows whose row this is (owner-scoped
+ * request, or the publisher's own aggregates for a strategy).
+ */
+export const mapPortfolioAttributionToResponse = (row: any) => ({
+  windowDays: row.windowDays,
+  portfolioReturn: row.portfolioReturn,
+  benchmarkReturn: row.benchmarkReturn,
+  vsBenchmark: row.portfolioReturn - row.benchmarkReturn,
+  allocationEffect: row.allocationEffect,
+  selectionEffect: row.selectionEffect,
+  unattributedEffect: row.unattributedEffect,
+  reconciliationGap: row.reconciliationGap,
+  reconciled: row.reconciled,
+  benchmarkVersion: row.benchmarkVersion,
+  sectors: (row.sectorBreakdown as any[]).map(mapSectorAttribution),
+  computedAt: row.computedAt.toISOString(),
 })
 
 /** The publisher's own view of their listing. */
