@@ -18,6 +18,11 @@ describe('HttpClientAdapter Integration — simulated failures', () => {
     })
   })
 
+  // Ensure fake-timer tests never leak into parallel workers
+  afterEach(() => {
+    jest.useRealTimers()
+  })
+
   describe('transient failures — retry recovers', () => {
     it('should succeed after intermittent HTTP 5xx errors', async () => {
       let callCount = 0
@@ -112,14 +117,16 @@ describe('HttpClientAdapter Integration — simulated failures', () => {
 
       // Wait for reset
       jest.useFakeTimers()
-      jest.advanceTimersByTime(300)
+      try {
+        jest.advanceTimersByTime(300)
 
-      // Service recovers — should succeed in half-open state
-      mock.mockResolvedValue('recovered')
-      const result = await adapter.execute(mock, 'recoverableApi.call')
-      expect(result).toBe('recovered')
-
-      jest.useRealTimers()
+        // Service recovers — should succeed in half-open state
+        mock.mockResolvedValue('recovered')
+        const result = await adapter.execute(mock, 'recoverableApi.call')
+        expect(result).toBe('recovered')
+      } finally {
+        jest.useRealTimers()
+      }
     })
   })
 
@@ -211,13 +218,15 @@ describe('HttpClientAdapter Integration — simulated failures', () => {
 
       // After reset, service recovers
       jest.useFakeTimers()
-      jest.advanceTimersByTime(600)
+      try {
+        jest.advanceTimersByTime(600)
 
-      simulateStellarRpc.mockResolvedValue('tx_hash_abc')
-      const hash = await stellarAdapter.execute(simulateStellarRpc, 'stellar.submitTransaction')
-      expect(hash).toBe('tx_hash_abc')
-
-      jest.useRealTimers()
+        simulateStellarRpc.mockResolvedValue('tx_hash_abc')
+        const hash = await stellarAdapter.execute(simulateStellarRpc, 'stellar.submitTransaction')
+        expect(hash).toBe('tx_hash_abc')
+      } finally {
+        jest.useRealTimers()
+      }
     })
   })
 

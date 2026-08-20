@@ -1,0 +1,560 @@
+openapi: '3.0.3'
+info:
+  title: NeuroWealth Backend API
+  version: '1.0.0'
+  description: |
+    NeuroWealth autonomous DeFi portfolio manager backend.
+
+    Authentication: All protected endpoints require a `Bearer <JWT>` token in the
+    `Authorization` header, obtained from `POST /api/auth/login`.
+
+servers:
+  - url: /api/v1
+    description: Versioned API base (alias of /api for current release)
+  - url: /api
+    description: API base
+
+tags:
+  - name: Analytics
+    description: Portfolio performance and risk analytics
+  - name: Auth
+    description: Authentication and session management
+  - name: Portfolio
+    description: User portfolio management
+
+# ─── Reusable components ──────────────────────────────────────────────────────
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    # ── Shared primitives ────────────────────────────────────────────────────
+    Period:
+      type: string
+      enum: ['7d', '30d', '90d']
+      default: '30d'
+      description: Analysis time window. Maximum available history is 90 days.
+
+    InsufficientHistoryFlag:
+      type: boolean
+      description: |
+        True when the available snapshot history is shorter than the requested
+        window. Rows/responses with this flag set are excluded from leaderboard
+        rankings. Never silently serves a truncated window under the requested label.
+
+    NullableDecimal:
+      type: number
+      format: double
+      nullable: true
+
+    # ── Risk metrics ─────────────────────────────────────────────────────────
+    RiskMetrics:
+      type: object
+      description: |
+        Computed risk/performance statistics for a portfolio-value series.
+
+        **Null contract**: any metric that is not computable (insufficient samples,
+        zero variance, degenerate series) is returned as `null` — never as `0`,
+        `Infinity`, or `NaN`.
+
+        **VaR / CVaR estimators**:
+        - `varHistorical*` / `cvarHistorical*` — empirical (plain-historical),
+          sorts the observed return distribution. Preferred for DeFi portfolios.
+        - `varParametric*` — Gaussian assumption (mean + σ). Underestimates tail
+          risk for fat-tailed distributions; provided for comparison only.
+
+        All loss magnitudes are **positive numbers** (0.05 = 5% potential loss).
+      properties:
+        sampleCount:
+          type: integer
+          description: Number of period-return observations used in all computations.
+        annualisedVolatility:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: |
+            Sample standard deviation of period returns × √(periodsPerYear).
+            null if fewer than 2 return observations.
+        sortinoRatio:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: |
+            (Annualised mean return − MAR) / annualised downside deviation.
+            null if fewer than 2 observations or downside deviation is 0 (no losses).
+        downsideDeviation:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: RMS of returns below MAR, annualised. null if no returns.
+        maxDrawdown:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: |
+            Maximum peak-to-trough decline as a positive fraction (0.15 = 15%).
+            null if fewer than 2 value points.
+        maxDrawdownDuration:
+          nullable: true
+          type: integer
+          description: |
+            Number of observation steps from peak to trough in the max drawdown
+            episode. null if no drawdown occurred.
+        varHistorical95:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: Historical VaR at 95% confidence (positive = potential loss).
+        varHistorical99:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: Historical VaR at 99% confidence.
+        varParametric95:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: Parametric (Gaussian) VaR at 95% confidence.
+        varParametric99:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: Parametric (Gaussian) VaR at 99% confidence.
+        cvarHistorical95:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: Historical CVaR (Expected Shortfall) at 95%.
+        cvarHistorical99:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: Historical CVaR at 99%.
+        beta:
+          allOf:
+            - $ref: '#/components/schemas/NullableDecimal'
+          description: |
+            Beta vs an exogenous benchmark series. null when no benchmark is
+            provided (benchmark index ingestion is deferred).
+        periodsPerYear:
+          type: number
+          description: |
+            Inferred periods-per-year used for annualisation, derived from the
+            median inter-observation spacing. Robust to snapshot gaps.
+      required:
+        - sampleCount
+        - periodsPerYear
+
+    PortfolioRiskResponse:
+      type: object
+      properties:
+        userId:
+          type: string
+          format: uuid
+        requestedWindow:
+          $ref: '#/components/schemas/Period'
+        actualWindowDays:
+          type: integer
+          description: Days of data actually used (may be shorter than requested).
+        insufficientHistory:
+          $ref: '#/components/schemas/InsufficientHistoryFlag'
+        dataFrom:
+          nullable: true
+          type: string
+          format: date-time
+          description: ISO timestamp of the earliest snapshot included.
+        dataTo:
+          nullable: true
+          type: string
+          format: date-time
+          description: ISO timestamp of the latest snapshot included.
+        computedAt:
+          type: string
+          format: date-time
+          description: When these figures were computed (staleness signal).
+        source:
+          type: string
+          enum: ['precomputed', 'live']
+          description: Whether the response was served from the precomputed cache.
+        metrics:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/RiskMetrics'
+          description: null when sampleCount is 0 (entirely un-funded history).
+      required:
+        - userId
+        - requestedWindow
+        - actualWindowDays
+        - insufficientHistory
+        - computedAt
+        - source
+
+    RollingVolPoint:
+      type: object
+      properties:
+        timestampMs:
+          type: integer
+          format: int64
+          description: Epoch milliseconds of the last return in this rolling window.
+        volatility:
+          nullable: true
+          type: number
+          format: double
+          description: Annualised volatility over the window. null if insufficient data.
+      required:
+        - timestampMs
+        - volatility
+
+    DrawdownPoint:
+      type: object
+      properties:
+        timestampMs:
+          type: integer
+          format: int64
+        drawdown:
+          type: number
+          format: double
+          description: Drawdown from the running peak as a positive fraction.
+      required:
+        - timestampMs
+        - drawdown
+
+    TimeseriesResponse:
+      type: object
+      properties:
+        userId:
+          type: string
+          format: uuid
+        requestedWindow:
+          $ref: '#/components/schemas/Period'
+        insufficientHistory:
+          $ref: '#/components/schemas/InsufficientHistoryFlag'
+        rollingVolatility:
+          type: array
+          items:
+            $ref: '#/components/schemas/RollingVolPoint'
+        drawdown:
+          type: array
+          items:
+            $ref: '#/components/schemas/DrawdownPoint'
+        computedAt:
+          type: string
+          format: date-time
+      required:
+        - userId
+        - requestedWindow
+        - insufficientHistory
+        - rollingVolatility
+        - drawdown
+        - computedAt
+
+    ValidationError:
+      type: object
+      properties:
+        error:
+          type: string
+          example: Validation error
+        details:
+          type: object
+      required:
+        - error
+
+    UnauthorizedError:
+      type: object
+      properties:
+        error:
+          type: string
+          example: Unauthorized
+      required:
+        - error
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid JWT.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UnauthorizedError'
+
+# ─── Paths ────────────────────────────────────────────────────────────────────
+paths:
+
+  # ── Risk endpoints ───────────────────────────────────────────────────────────
+
+  /analytics/risk:
+    get:
+      operationId: getPortfolioRisk
+      summary: Portfolio risk metrics
+      description: |
+        Returns VaR (95%/99%, historical and parametric), CVaR (95%/99%,
+        historical), Sortino ratio, downside deviation, max drawdown (+duration),
+        and annualised volatility for the authenticated user's portfolio.
+
+        **Ownership**: `userId` is taken from the JWT payload — you cannot read
+        another user's risk data via this endpoint.
+
+        **Retention boundary**: YieldSnapshot rows are hard-deleted after 90 days
+        by the snapshotter. Windows longer than the available history are
+        relabelled with `insufficientHistory: true` and `actualWindowDays` set to
+        the honest available span — never silently truncated.
+
+        **Caching**: If a precomputed row < 1 hour old exists, it is returned
+        directly (`source: "precomputed"`). Otherwise a live compute is performed
+        (`source: "live"`).
+
+        **Null contract**: metrics that cannot be computed return `null`, never
+        `0`, `Infinity`, or `NaN`.
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: window
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Period'
+          description: Analysis time window.
+      responses:
+        '200':
+          description: Risk metrics for the authenticated user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PortfolioRiskResponse'
+              examples:
+                sufficient_history:
+                  summary: User with 30d of data
+                  value:
+                    userId: "3f8e1c2a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
+                    requestedWindow: "30d"
+                    actualWindowDays: 30
+                    insufficientHistory: false
+                    dataFrom: "2026-07-21T00:00:00.000Z"
+                    dataTo: "2026-08-20T00:00:00.000Z"
+                    computedAt: "2026-08-20T12:00:00.000Z"
+                    source: "precomputed"
+                    metrics:
+                      sampleCount: 720
+                      annualisedVolatility: 0.12
+                      sortinoRatio: 1.85
+                      downsideDeviation: 0.045
+                      maxDrawdown: 0.08
+                      maxDrawdownDuration: 14
+                      varHistorical95: 0.031
+                      varHistorical99: 0.065
+                      varParametric95: 0.028
+                      varParametric99: 0.044
+                      cvarHistorical95: 0.052
+                      cvarHistorical99: 0.078
+                      beta: null
+                      periodsPerYear: 8760
+                insufficient_history:
+                  summary: New user with < 7d data requesting 30d
+                  value:
+                    userId: "3f8e1c2a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
+                    requestedWindow: "30d"
+                    actualWindowDays: 3
+                    insufficientHistory: true
+                    dataFrom: "2026-08-17T00:00:00.000Z"
+                    dataTo: "2026-08-20T00:00:00.000Z"
+                    computedAt: "2026-08-20T12:00:00.000Z"
+                    source: "live"
+                    metrics: null
+        '400':
+          description: Invalid query parameters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '401':
+          description: Missing or invalid JWT.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedError'
+        '500':
+          description: Internal server error.
+
+  /analytics/risk/timeseries:
+    get:
+      operationId: getPortfolioRiskTimeseries
+      summary: Portfolio risk timeseries (rolling volatility + drawdown)
+      description: |
+        Returns graph-ready rolling annualised volatility and running-peak
+        drawdown series for the authenticated user's portfolio.
+
+        **Ownership**: `userId` is taken from the JWT payload.
+
+        **Null in rolling volatility**: points with fewer observations than
+        `rollingWindow` have `volatility: null`.
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: window
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Period'
+        - name: rollingWindow
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 2
+            maximum: 30
+            default: 7
+          description: Number of observations per rolling volatility window.
+      responses:
+        '200':
+          description: Timeseries data for the authenticated user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeseriesResponse'
+        '400':
+          description: Invalid query parameters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '401':
+          description: Missing or invalid JWT.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedError'
+        '500':
+          description: Internal server error.
+
+  # ── Existing analytics endpoints ─────────────────────────────────────────────
+
+  /analytics/apy-history:
+    get:
+      operationId: getApyHistory
+      summary: APY snapshot history
+      description: |
+        Returns APY snapshots over time for the authenticated user's positions.
+        Graph-ready (sorted ascending by date).
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: period
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Period'
+      responses:
+        '200':
+          description: APY history points.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  userId:
+                    type: string
+                    format: uuid
+                  period:
+                    $ref: '#/components/schemas/Period'
+                  points:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date:
+                          type: string
+                          format: date
+                        apy:
+                          type: number
+                        positionId:
+                          type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /analytics/user-yield:
+    get:
+      operationId: getUserYield
+      summary: User yield summary
+      description: Returns cumulative and period yield earned by the authenticated user.
+      tags: [Analytics]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: period
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Period'
+      responses:
+        '200':
+          description: Yield summary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  userId:
+                    type: string
+                    format: uuid
+                  period:
+                    $ref: '#/components/schemas/Period'
+                  totalYield:
+                    type: number
+                  periodYield:
+                    type: number
+                  averageApy:
+                    type: number
+                  points:
+                    type: array
+                    items:
+                      type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /analytics/protocol-performance:
+    get:
+      operationId: getProtocolPerformance
+      summary: Protocol APY history
+      description: Returns historical APY rates per protocol. Public endpoint (no auth required).
+      tags: [Analytics]
+      parameters:
+        - name: period
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Period'
+      responses:
+        '200':
+          description: Protocol APY history grouped by protocol.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  period:
+                    $ref: '#/components/schemas/Period'
+                  protocols:
+                    type: array
+                    items:
+                      type: object
+
+  # ── Health ────────────────────────────────────────────────────────────────────
+
+  /health/live:
+    get:
+      operationId: getLiveness
+      summary: Liveness probe
+      description: Always returns 200 once the process is running.
+      tags: [Health]
+      responses:
+        '200':
+          description: Process alive.
+
+  /health/ready:
+    get:
+      operationId: getReadiness
+      summary: Readiness probe
+      description: Returns 200 only when all background services are healthy.
+      tags: [Health]
+      responses:
+        '200':
+          description: All services ready.
+        '503':
+          description: One or more services not ready.
+
+
