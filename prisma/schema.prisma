@@ -71,6 +71,7 @@ model User {
   positions    Position[]
   transactions Transaction[]
   agentLogs    AgentLog[]
+  portfolioRiskAggregates PortfolioRiskAggregate[]
 
   @@map("users")
 }
@@ -277,4 +278,46 @@ model AuthNonce {
 
   @@index([expiresAt])
   @@map("auth_nonces")
+}
+
+/// Precomputed per-user risk metric aggregates.
+/// Written by the portfolioRisk scheduled job (src/jobs/portfolioRisk.ts).
+/// Leaderboards and dashboards read from this table (SQL ORDER BY) rather than
+/// recomputing on every request.
+///
+/// `insufficientHistory` is set to true when the available snapshot history is
+/// shorter than the requested window. Such rows are persisted so the data gap
+/// is visible, but they are excluded from leaderboard rankings.
+model PortfolioRiskAggregate {
+  id                    String   @id @default(uuid())
+  userId                String
+  /// Analysis window ('7d' | '30d' | '90d')
+  window                String
+  insufficientHistory   Boolean  @default(false)
+  sampleCount           Int      @default(0)
+  annualisedVolatility  Decimal? @db.Decimal(20, 8)
+  sortinoRatio          Decimal? @db.Decimal(20, 8)
+  downsideDeviation     Decimal? @db.Decimal(20, 8)
+  maxDrawdown           Decimal? @db.Decimal(20, 8)
+  maxDrawdownDuration   Int?
+  varHistorical95       Decimal? @db.Decimal(20, 8)
+  varHistorical99       Decimal? @db.Decimal(20, 8)
+  varParametric95       Decimal? @db.Decimal(20, 8)
+  varParametric99       Decimal? @db.Decimal(20, 8)
+  cvarHistorical95      Decimal? @db.Decimal(20, 8)
+  cvarHistorical99      Decimal? @db.Decimal(20, 8)
+  beta                  Decimal? @db.Decimal(20, 8)
+  dataFrom              DateTime?
+  dataTo                DateTime?
+  computedAt            DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, window], name: "userId_window")
+  @@index([userId])
+  @@index([window])
+  @@index([computedAt])
+  @@index([sortinoRatio])
+  @@index([annualisedVolatility])
+  @@map("portfolio_risk_aggregates")
 }
