@@ -274,4 +274,11 @@ export const config = {
     circuitBreakerThreshold: parseInt(process.env.HTTP_CLIENT_CIRCUIT_BREAKER_THRESHOLD || '5'),
     circuitBreakerResetMs: parseInt(process.env.HTTP_CLIENT_CIRCUIT_BREAKER_RESET_MS || '30000'),
   },
+  analytics: {
+    /**
+     * PORTFOLIO_RISK_INTERVAL_HOURS: how often the portfolioRisk job
+     * recomputes and persists per-user risk metrics (default: 6 hours).
+     */
+    portfolioRiskIntervalHours: parseInt(process.env.PORTFOLIO_RISK_INTERVAL_HOURS || '6'),
+  },
 }
