@@ -31,7 +31,6 @@ import {
   RiskScoreRow,
 } from './types'
 
-
 /**
  * Notional starting capital for the backtest comparison when the user has no
  * position value to anchor to. The comparison is about RELATIVE performance of
@@ -415,5 +414,3 @@ function describeOutcome(outcome: OptimizationOutcome): string | null {
       return `Solver did not converge within ${outcome.iterations} iterations (residual ${outcome.residual.toExponential(3)}); returning the best feasible allocation found`
   }
 }
-
-

@@ -217,7 +217,6 @@ export function annualizedReturnPercent(points: PortfolioPoint[]): number {
   return Number.isFinite(apy) ? apy : 0
 }
 
-
 /**
  * Infer how many return periods a year holds, from the median spacing of the
  * series. Delegates to the canonical implementation in src/analytics/metrics.ts
@@ -225,7 +224,10 @@ export function annualizedReturnPercent(points: PortfolioPoint[]): number {
  */
 export const inferPeriodsPerYear = (points: PortfolioPoint[]): number => {
   // Adapt PortfolioPoint[] → ValuePoint[] for the canonical function
-  const valuePts = points.map((p) => ({ timestampMs: p.at.getTime(), value: p.value }))
+  const valuePts = points.map((p) => ({
+    timestampMs: p.at.getTime(),
+    value: p.value,
+  }))
   return _inferPeriodsPerYear(valuePts) ?? HOURLY_PERIODS_PER_YEAR
 }
 

@@ -71,7 +71,12 @@ describe('Anti-Duplication Guard: Risk Analytics Engine', () => {
       lines.forEach((line, idx) => {
         // Skip comment lines
         const trimmed = line.trim()
-        if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return
+        if (
+          trimmed.startsWith('//') ||
+          trimmed.startsWith('*') ||
+          trimmed.startsWith('/*')
+        )
+          return
 
         for (const pattern of forbiddenPatterns) {
           if (pattern.test(line)) {

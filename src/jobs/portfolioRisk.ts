@@ -19,7 +19,11 @@ import db from '../db'
 import { logger } from '../utils/logger'
 import { config } from '../config/env'
 import { alertingService } from '../services/alerting'
-import { getPortfolioRisk, upsertUserRiskAggregate, type RiskWindow } from '../analytics/riskService'
+import {
+  getPortfolioRisk,
+  upsertUserRiskAggregate,
+  type RiskWindow,
+} from '../analytics/riskService'
 
 const WINDOWS: RiskWindow[] = ['7d', '30d', '90d']
 const MAX_RETRIES = 3
@@ -101,9 +105,12 @@ async function runWithRetry(attempt = 1): Promise<void> {
     await runPortfolioRiskPrecompute()
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    logger.error(`[PortfolioRisk] Compute run failed (attempt ${attempt}/${MAX_RETRIES})`, {
-      error: message,
-    })
+    logger.error(
+      `[PortfolioRisk] Compute run failed (attempt ${attempt}/${MAX_RETRIES})`,
+      {
+        error: message,
+      }
+    )
 
     if (attempt < MAX_RETRIES) {
       const delayMs = attempt * 30_000 // 30s, 60s backoff
@@ -142,6 +149,8 @@ export function schedulePortfolioRiskJob(): NodeJS.Timeout {
     })
   }, intervalMs)
 
-  logger.info(`[PortfolioRisk] Job scheduled every ${intervalMs / (60 * 60 * 1000)}h`)
+  logger.info(
+    `[PortfolioRisk] Job scheduled every ${intervalMs / (60 * 60 * 1000)}h`
+  )
   return handle
 }

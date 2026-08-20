@@ -235,7 +235,10 @@ describe('HttpClientAdapter Integration — simulated failures', () => {
         jest.advanceTimersByTime(600)
 
         simulateStellarRpc.mockResolvedValue('tx_hash_abc')
-        const hash = await stellarAdapter.execute(simulateStellarRpc, 'stellar.submitTransaction')
+        const hash = await stellarAdapter.execute(
+          simulateStellarRpc,
+          'stellar.submitTransaction'
+        )
         expect(hash).toBe('tx_hash_abc')
       } finally {
         jest.useRealTimers()

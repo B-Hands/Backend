@@ -244,7 +244,11 @@ router.get('/risk', requireAuth, async (req: Request, res: Response) => {
       userId,
       requestedWindow: window,
       actualWindowDays: Math.min(
-        parsed.data.window === '30d' ? 30 : parsed.data.window === '60d' ? 60 : 90,
+        parsed.data.window === '30d'
+          ? 30
+          : parsed.data.window === '60d'
+            ? 60
+            : 90,
         90
       ),
       insufficientHistory: persisted.insufficientHistory,

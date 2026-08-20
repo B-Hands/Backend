@@ -192,7 +192,9 @@ describe('Analytics Metrics Pure Module', () => {
   })
 
   describe('Historical vs Parametric VaR & CVaR', () => {
-    const returns = [-0.05, -0.02, 0.01, 0.03, 0.04, -0.01, 0.02, 0.05, -0.03, 0.01]
+    const returns = [
+      -0.05, -0.02, 0.01, 0.03, 0.04, -0.01, 0.02, 0.05, -0.03, 0.01,
+    ]
 
     it('computes historical VaR and CVaR as positive loss magnitudes', () => {
       const var95 = historicalVaR(returns, 0.95)
@@ -245,7 +247,13 @@ describe('Analytics Metrics Pure Module', () => {
   describe('Rolling Volatility & Drawdown Timeseries', () => {
     it('computes rolling volatility series with nulls for initial window warmup', () => {
       const returns = [0.01, -0.02, 0.03, -0.01, 0.02]
-      const timestamps = [DAY_MS, 2 * DAY_MS, 3 * DAY_MS, 4 * DAY_MS, 5 * DAY_MS]
+      const timestamps = [
+        DAY_MS,
+        2 * DAY_MS,
+        3 * DAY_MS,
+        4 * DAY_MS,
+        5 * DAY_MS,
+      ]
       const rolling = rollingVolatility(returns, timestamps, 3, 365.25)
 
       expect(rolling.length).toBe(5)
