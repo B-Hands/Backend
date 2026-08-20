@@ -1,5 +1,5 @@
 /**
- * Allocation-suggestion service (#322) — the DB glue around the pure core.
+ * Allocation-suggestion and risk analytics service (#225, #322) — the DB glue around pure cores.
  *
  * ─── THE ADVISORY INVARIANT ──────────────────────────────────────────────────
  *
@@ -9,27 +9,6 @@
  * deliberate act by the user through the existing strategy update path, which
  * already validates the config (publishableConfigSchema) and already logs the
  * change.
- *
- * That is not a convention — tests/unit/analytics/structural.test.ts scans this
- * file's source text and fails on any `user.update`, `strategyConfig` write, or
- * `src/stellar/` import. The reason for the paranoia: an optimizer that can
- * silently rewrite where someone's money sits is a fundamentally different and
- * far more dangerous feature than one that draws a chart.
- *
- * ─── PRECEDENCE, MIRRORED EXACTLY FROM THE AGENT ─────────────────────────────
- *
- * The agent resolves a user's effective risk ceiling with TWO deliberately
- * different merge rules, and a suggestion that used a third would be advice
- * about a portfolio the agent will never build. So both are mirrored verbatim:
- *
- *   1. A FOLLOWED strategy merges via stricterRiskCeiling (Math.max — higher
- *      score means lower risk, so a follow may only ever TIGHTEN a follower's
- *      exposure). See src/agent/effectiveStrategy.ts.
- *   2. An ACTIVE SavingsGoal then OVERRIDES via `??`, matching
- *      src/agent/router.ts — a stated personal target outranks a copied config,
- *      and it may legitimately loosen the ceiling.
- *
- * Unifying these into one rule would be tidier and wrong.
  */
 
 import crypto from 'crypto'
@@ -118,9 +97,6 @@ export function resolveEffectiveInputs(
           ? 'follow'
           : 'own'
 
-  // A follow replaces allocations WHOLESALE, never key-by-key — pairing a
-  // publisher's strategy with a follower's leftover allocations would produce a
-  // configuration neither party chose (src/agent/effectiveStrategy.ts).
   const currentAllocations = followed?.strategyName
     ? followed.targetAllocations
     : (followed?.targetAllocations ?? own.targetAllocations)
@@ -135,17 +111,6 @@ export function resolveEffectiveInputs(
 
 /**
  * Canonical input-snapshot hash.
- *
- * Two suggestions with the same hash MUST have the same weights — that is what
- * makes "did the recommendation change, or only my inputs?" answerable. So the
- * hash covers exactly the values the optimizer consumes, in a canonical form:
- * protocols sorted, numbers fixed to a stable precision (raw float
- * serialization would make the hash sensitive to noise far below what changes
- * an answer), and every constraint included.
- *
- * Follows the canonicalisation approach of normalizeStrategyConfig
- * (src/agent/effectiveStrategy.ts) and the `sha256:` prefix convention from
- * deriveTokenPrefix (src/middleware/adminAuth.ts).
  */
 export function computeInputHash(input: {
   protocols: string[]
@@ -155,8 +120,6 @@ export function computeInputHash(input: {
   effectiveRiskCeiling: number | undefined
   lookbackDays: number
 }): string {
-  // 9 decimal places: far finer than any difference that moves a weight, coarse
-  // enough that float associativity noise cannot flip the hash.
   const round = (n: number): string => n.toFixed(9)
 
   const canonical = JSON.stringify({
@@ -173,20 +136,6 @@ export function computeInputHash(input: {
 
 /**
  * Backtest both configurations over the same history.
- *
- * ─── WHAT THIS ACTUALLY SIMULATES ────────────────────────────────────────────
- *
- * The agent has NO multi-protocol position model: Position.protocolName is a
- * single string and TargetAllocationStrategy uses weights only to rank a single
- * hop (src/agent/strategies.ts). So this cannot and does not simulate holding a
- * weighted basket. It replays what the EXISTING agent would have done under each
- * weight vector, which is the honest question given the engine that exists.
- *
- * BACKTEST_CAVEAT travels with the result into the API response and the docs
- * rather than being left for a user to infer from a chart that looks like a
- * portfolio simulation.
- *
- * Returns null when there is nothing meaningful to compare.
  */
 export async function computeBacktestComparison(
   suggestedPercentages: Record<string, number>,
@@ -208,20 +157,10 @@ export async function computeBacktestComparison(
 
   const { series } = buildDailyRateSeries(rates, startDate, endDate)
 
-  // Trim leading days that have no protocol at all.
-  //
-  // buildDailyRateSeries only carries a protocol forward from its first
-  // observation, so if the earliest observation falls even minutes after the
-  // window's opening midnight, day zero is empty — and runBacktest treats an
-  // empty first day as `insufficient_history` and abandons the whole run. That
-  // would discard 89 perfectly good days over a timestamp alignment artifact.
-  // Trimming to the first populated day makes the comparison depend on the data
-  // that exists rather than on when the rate scanner happened to run.
   const firstPopulated = series.findIndex((d) => d.protocols.length > 0)
   if (firstPopulated === -1) return null
   const trimmed = series.slice(firstPopulated)
 
-  // The realized-APY denominator must match the window actually replayed.
   const effectiveStart = trimmed[0].date
   if (endDate.getTime() <= effectiveStart.getTime()) return null
 
@@ -252,9 +191,6 @@ export async function computeBacktestComparison(
   const suggested = await runLeg(suggestedPercentages)
   if (!suggested) return null
 
-  // A user with no allocation configured yet gets the suggested leg only —
-  // there is no "current" to compare against, and inventing one would be a
-  // fabricated baseline.
   const current =
     currentAllocations && Object.keys(currentAllocations).length > 0
       ? await runLeg(currentAllocations)
@@ -272,13 +208,6 @@ export async function computeBacktestComparison(
 
 /**
  * Compute (and persist) an allocation suggestion for one user.
- *
- * @param userId  The user the suggestion is for.
- * @param options.now         Reference "now", injected for deterministic tests.
- * @param options.persist     Set false to compute without writing a row.
- * @param options.runBacktest Set false to skip the backtest legs (the job does
- *                            this — the comparison is the expensive part and is
- *                            only interesting when a human is looking).
  */
 export async function suggestAllocation(
   userId: string,
@@ -287,7 +216,6 @@ export async function suggestAllocation(
     persist?: boolean
     runBacktest?: boolean
     lookbackDays?: number
-    /** Efficient-frontier resolution. Clamped by the optimizer's hard cap. */
     frontierPoints?: number
   } = {}
 ): Promise<AllocationSuggestionResult> {
@@ -431,8 +359,6 @@ export async function suggestAllocation(
         inputHash,
         status: outcome.status,
         weights,
-        // Prisma's InputJsonValue does not accept a typed interface array
-        // directly (no index signature); these are plain JSON-safe structures.
         frontier: (outcome.status === 'ok'
           ? outcome.frontier
           : []) as unknown as Prisma.InputJsonValue,
@@ -463,12 +389,6 @@ export async function suggestAllocation(
   return result
 }
 
-/**
- * The user's current invested value, used as the backtest's starting capital so
- * the comparison is denominated in numbers they recognize. Falls back to a fixed
- * notional when they hold nothing — the comparison is relative, and a fixed
- * fallback keeps the run deterministic.
- */
 async function resolveNotional(userId: string): Promise<number> {
   const positions = await db.position.findMany({
     where: { userId, status: 'ACTIVE' },
@@ -478,7 +398,6 @@ async function resolveNotional(userId: string): Promise<number> {
   return total > 0 ? total : DEFAULT_BACKTEST_NOTIONAL
 }
 
-/** One-line human explanation of a non-ok outcome, stored on the row. */
 function describeOutcome(outcome: OptimizationOutcome): string | null {
   switch (outcome.status) {
     case 'ok':

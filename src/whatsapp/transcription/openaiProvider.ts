@@ -90,7 +90,7 @@ export class OpenAiTranscriptionProvider implements TranscriptionProvider {
     }
 
     const form = new FormData()
-    const blob = new Blob([audio.buffer], {
+    const blob = new Blob([new Uint8Array(audio.buffer)], {
       type: audio.contentType.split(';')[0]?.trim() || 'audio/ogg',
     })
     form.append('file', blob, filenameFor(audio.contentType))

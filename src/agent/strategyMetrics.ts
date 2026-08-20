@@ -44,6 +44,8 @@ export interface SnapshotRow {
   yieldAmount: number
 }
 
+import { inferPeriodsPerYear as _inferPeriodsPerYear } from '../analytics/metrics'
+
 /** Whole-portfolio value at one instant. */
 export interface PortfolioPoint {
   at: Date
@@ -217,23 +219,16 @@ export function annualizedReturnPercent(points: PortfolioPoint[]): number {
 
 /**
  * Infer how many return periods a year holds, from the median spacing of the
- * series. Median rather than mean so a single data gap (a restart, a missed
- * job) does not distort the annualization factor.
+ * series. Delegates to the canonical implementation in src/analytics/metrics.ts
+ * so there is only one definition in the codebase (required by #225).
  */
-export function inferPeriodsPerYear(points: PortfolioPoint[]): number {
-  if (points.length < 2) return HOURLY_PERIODS_PER_YEAR
-
-  const intervals: number[] = []
-  for (let i = 1; i < points.length; i++) {
-    const delta = points[i].at.getTime() - points[i - 1].at.getTime()
-    if (delta > 0) intervals.push(delta)
-  }
-  if (intervals.length === 0) return HOURLY_PERIODS_PER_YEAR
-
-  const medianInterval = median(intervals)
-  if (!(medianInterval > 0)) return HOURLY_PERIODS_PER_YEAR
-
-  return MS_PER_YEAR / medianInterval
+export const inferPeriodsPerYear = (points: PortfolioPoint[]): number => {
+  // Adapt PortfolioPoint[] → ValuePoint[] for the canonical function
+  const valuePts = points.map((p) => ({
+    timestampMs: p.at.getTime(),
+    value: p.value,
+  }))
+  return _inferPeriodsPerYear(valuePts) ?? HOURLY_PERIODS_PER_YEAR
 }
 
 /**

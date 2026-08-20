@@ -54,13 +54,8 @@ import { scheduleStrategyMetrics } from './jobs/strategyMetrics'
 import { scheduleAllocationSuggestions } from './jobs/allocationSuggestions'
 import { scheduleAttribution } from './jobs/attribution'
 import { scheduleOutboxDispatcher } from './outbox/dispatcher'
-// Was never imported or started, so ProtocolRiskScore rows were never refreshed
-// after their first backfill. That matters beyond staleness: risk-ceiling
-// filtering is fail-closed (applyRiskCeiling treats an unknown score as
-// ineligible), so an empty or stale table makes every ceiling-constrained
-// allocation suggestion — and every ceiling-constrained rebalance — return
-// nothing eligible. Wired up here (#322).
 import { scheduleProtocolRiskScoring } from './jobs/protocolRiskScoring'
+import { schedulePortfolioRiskJob } from './jobs/portfolioRisk'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { validateStellarNetworkReady } from './config/readiness'
 import healthRouter from './routes/health'
@@ -121,6 +116,7 @@ let allocationSuggestionsHandle: NodeJS.Timeout | null = null
 let protocolRiskScoringHandle: NodeJS.Timeout | null = null
 let attributionHandle: NodeJS.Timeout | null = null
 let outboxDispatcherHandle: NodeJS.Timeout | null = null
+let portfolioRiskJobHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
@@ -407,6 +403,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.info('[Shutdown] Outbox dispatcher timer cleared')
   }
 
+  if (portfolioRiskJobHandle) {
+    clearInterval(portfolioRiskJobHandle)
+    portfolioRiskJobHandle = null
+    logger.info('[Shutdown] Portfolio risk job timer cleared')
+  }
+
   if (!httpServer) {
     logger.warn('[Shutdown] No HTTP server to close')
     process.exit(0)
@@ -570,6 +572,7 @@ async function main(): Promise<void> {
   protocolRiskScoringHandle = scheduleProtocolRiskScoring()
   allocationSuggestionsHandle = scheduleAllocationSuggestions()
   attributionHandle = scheduleAttribution()
+  portfolioRiskJobHandle = schedulePortfolioRiskJob()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────

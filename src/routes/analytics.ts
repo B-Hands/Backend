@@ -3,6 +3,13 @@ import { z } from 'zod'
 import db from '../db'
 import { requireAuth } from '../middleware/authenticate'
 import { mapPortfolioAttributionToResponse } from '../utils/api-formatters'
+import {
+  getPortfolioRiskMetrics,
+  getPortfolioRiskTimeseries,
+  getStrategyRiskMetrics,
+  getPersistedUserRisk,
+} from '../analytics/riskService'
+import { RiskWindow } from '../analytics/metrics'
 
 const router = Router()
 
@@ -14,12 +21,6 @@ function periodToDays(period: string): number {
   return period === '7d' ? 7 : period === '30d' ? 30 : 90
 }
 
-/**
- * `window` accepts 30d/90d only, same retention-honest rule as the strategy
- * marketplace (src/validators/strategy-validators.ts): YieldSnapshot rows are
- * hard-deleted past 90 days (src/agent/snapshotter.ts), so a longer window
- * has no data behind it.
- */
 const attributionQuerySchema = z.object({
   window: z
     .enum(['30d', '90d'], {
@@ -32,6 +33,10 @@ const attributionQuerySchema = z.object({
 function attributionWindowToDays(window: '30d' | '90d'): number {
   return window === '30d' ? 30 : 90
 }
+
+const riskQuerySchema = z.object({
+  window: z.enum(['30d', '60d', '90d']).default('90d'),
+})
 
 /**
  * GET /analytics/apy-history
@@ -152,7 +157,6 @@ router.get('/protocol-performance', async (req: Request, res: Response) => {
     },
   })
 
-  // Group by protocol for graph-ready output
   const byProtocol: Record<
     string,
     {
@@ -187,16 +191,6 @@ router.get('/protocol-performance', async (req: Request, res: Response) => {
 
 /**
  * GET /analytics/attribution
- *
- * Benchmark-relative Brinson attribution for the caller's OWN portfolio —
- * owner-scoped via req.auth.userId, never a path param (#320). Reads the
- * precomputed PortfolioAttribution row rather than recomputing per request;
- * see src/jobs/attribution.ts and src/analytics/attribution.ts.
- *
- * A 200 with `computed: false` (not a 404) is returned when nothing has been
- * precomputed yet for this user/window — "no attribution yet" is a normal
- * state for a very new account, not a missing resource, mirroring the
- * `{ follow: null }` convention in the strategy marketplace.
  */
 router.get('/attribution', requireAuth, async (req: Request, res: Response) => {
   const userId = req.auth!.userId
@@ -228,5 +222,123 @@ router.get('/attribution', requireAuth, async (req: Request, res: Response) => {
     ...mapPortfolioAttributionToResponse(row),
   })
 })
+
+/**
+ * GET /analytics/risk
+ * Returns precomputed or live portfolio risk metrics for the authenticated user.
+ */
+router.get('/risk', requireAuth, async (req: Request, res: Response) => {
+  const userId = req.auth!.userId
+  const parsed = riskQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    return res
+      .status(400)
+      .json({ error: 'Validation error', details: parsed.error.flatten() })
+  }
+
+  const window = parsed.data.window as RiskWindow
+  const persisted = await getPersistedUserRisk(userId, window)
+
+  if (persisted) {
+    return res.status(200).json({
+      userId,
+      requestedWindow: window,
+      actualWindowDays: Math.min(
+        parsed.data.window === '30d'
+          ? 30
+          : parsed.data.window === '60d'
+            ? 60
+            : 90,
+        90
+      ),
+      insufficientHistory: persisted.insufficientHistory,
+      sampleCount: persisted.sampleCount,
+      metrics: {
+        annualisedVolatility: persisted.annualisedVolatility
+          ? Number(persisted.annualisedVolatility)
+          : null,
+        sortinoRatio: persisted.sortinoRatio
+          ? Number(persisted.sortinoRatio)
+          : null,
+        downsideDeviation: persisted.downsideDeviation
+          ? Number(persisted.downsideDeviation)
+          : null,
+        maxDrawdown: persisted.maxDrawdown
+          ? Number(persisted.maxDrawdown)
+          : null,
+        maxDrawdownDuration: persisted.maxDrawdownDuration,
+        valueAtRisk: {
+          varHistorical95: persisted.varHistorical95
+            ? Number(persisted.varHistorical95)
+            : null,
+          varHistorical99: persisted.varHistorical99
+            ? Number(persisted.varHistorical99)
+            : null,
+          varParametric95: persisted.varParametric95
+            ? Number(persisted.varParametric95)
+            : null,
+          varParametric99: persisted.varParametric99
+            ? Number(persisted.varParametric99)
+            : null,
+          cvarHistorical95: persisted.cvarHistorical95
+            ? Number(persisted.cvarHistorical95)
+            : null,
+          cvarHistorical99: persisted.cvarHistorical99
+            ? Number(persisted.cvarHistorical99)
+            : null,
+        },
+        beta: persisted.beta ? Number(persisted.beta) : null,
+      },
+      computedAt: persisted.computedAt.toISOString(),
+      cached: true,
+    })
+  }
+
+  const result = await getPortfolioRiskMetrics(userId, window)
+  return res.status(200).json({ ...result, cached: false })
+})
+
+/**
+ * GET /analytics/risk/timeseries
+ * Returns daily portfolio value, return, and drawdown time-series.
+ */
+router.get(
+  '/risk/timeseries',
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const userId = req.auth!.userId
+    const parsed = riskQuerySchema.safeParse(req.query)
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'Validation error', details: parsed.error.flatten() })
+    }
+
+    const window = parsed.data.window as RiskWindow
+    const result = await getPortfolioRiskTimeseries(userId, window)
+    return res.status(200).json(result)
+  }
+)
+
+/**
+ * GET /analytics/risk/strategy/:publishedStrategyId
+ * Returns risk metrics for a published strategy.
+ */
+router.get(
+  '/risk/strategy/:publishedStrategyId',
+  async (req: Request, res: Response) => {
+    const { publishedStrategyId } = req.params
+    const parsed = riskQuerySchema.safeParse(req.query)
+    if (!parsed.success) {
+      return res
+        .status(400)
+        .json({ error: 'Validation error', details: parsed.error.flatten() })
+    }
+
+    const window = parsed.data.window as RiskWindow
+    const result = await getStrategyRiskMetrics(publishedStrategyId, window)
+    return res.status(200).json(result)
+  }
+)
 
 export default router

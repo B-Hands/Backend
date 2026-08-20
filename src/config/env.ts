@@ -247,6 +247,7 @@ function validateKeypairNetworkMatch(
 }
 
 /** Parse `CORS_ORIGINS` / `ALLOWED_ORIGINS` (comma-separated or `*`). */
+
 function parseCorsOrigins(): string[] | '*' {
   const raw = (process.env.CORS_ORIGINS ?? process.env.ALLOWED_ORIGINS)?.trim()
   if (!raw || raw === '*') return '*'
@@ -431,10 +432,6 @@ export const config = {
     twilioToken: process.env.TWILIO_AUTH_TOKEN || '',
     fromNumber: process.env.WHATSAPP_FROM || '',
   },
-  // Speech-to-text for WhatsApp voice notes (#288). The provider is swappable
-  // behind the TranscriptionProvider interface; these settings configure the
-  // default (OpenAI Whisper) implementation. Raw audio is never persisted —
-  // see docs/WHATSAPP_VOICE.md.
   transcription: {
     provider: process.env.TRANSCRIPTION_PROVIDER || 'openai',
     openaiApiKey: process.env.OPENAI_API_KEY || '',
@@ -442,17 +439,13 @@ export const config = {
     apiUrl:
       process.env.TRANSCRIPTION_API_URL ||
       'https://api.openai.com/v1/audio/transcriptions',
-    /**
-     * Minimum transcription confidence (0–1) required to act on a voice note.
-     * Below this the bot asks the user to repeat or type rather than guessing.
-     */
     confidenceThreshold: parseFloat(
       process.env.TRANSCRIPTION_CONFIDENCE_THRESHOLD || '0.6'
     ),
   },
   dlq: {
     alertThreshold: parseInt(process.env.DLQ_ALERT_THRESHOLD || '50'),
-    alertCooldownMs: parseInt(process.env.DLQ_ALERT_COOLDOWN_MS || '900000'), // 15 minutes default
+    alertCooldownMs: parseInt(process.env.DLQ_ALERT_COOLDOWN_MS || '900000'),
   },
   httpClient: {
     timeoutMs: parseInt(process.env.HTTP_CLIENT_TIMEOUT_MS || '10000'),
@@ -467,169 +460,89 @@ export const config = {
     ),
   },
   shutdown: {
-    /** Grace period (ms) for in-force requests to complete before force-exit */
     drainTimeoutMs: parseInt(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS || '30000'),
   },
   retention: {
-    /** How many days to keep processed_events rows (default: 90 days) */
     processedEventsDays: parseInt(
       process.env.RETENTION_PROCESSED_EVENTS_DAYS || '90'
     ),
-    /** How many days to keep RESOLVED dead_letter_events (default: 30 days) */
     deadLetterEventsDays: parseInt(
       process.env.RETENTION_DEAD_LETTER_EVENTS_DAYS || '30'
     ),
-    /** How many days to keep agent_logs rows (default: 60 days) */
     agentLogsDays: parseInt(process.env.RETENTION_AGENT_LOGS_DAYS || '60'),
-    /** Interval between retention job runs in ms (default: 24 hours) */
     intervalMs: parseInt(process.env.RETENTION_INTERVAL_MS || '86400000'),
   },
   protocolRisk: {
-    /** Interval between protocol risk-score recomputations in ms (default: 6 hours) */
     intervalMs: parseInt(process.env.PROTOCOL_RISK_INTERVAL_MS || '21600000'),
   },
+  portfolioRisk: {
+    intervalMs: parseInt(process.env.PORTFOLIO_RISK_INTERVAL_MS || '21600000'),
+  },
   alertRules: {
-    /** Interval between user alert-rule evaluation sweeps in ms (default: 1 minute). */
     intervalMs: parseInt(process.env.ALERT_RULES_INTERVAL_MS || '60000'),
   },
   strategyMarketplace: {
-    /**
-     * Interval between strategy-marketplace metric recomputations in ms
-     * (default: 6 hours, matching protocolRisk). Leaderboard figures are
-     * derived from hourly snapshots, so a faster cadence buys nothing but load.
-     */
     metricsIntervalMs: parseInt(
       process.env.STRATEGY_METRICS_INTERVAL_MS || '21600000'
     ),
-    /**
-     * Annual risk-free rate used as the Sharpe baseline, as a decimal
-     * (0.04 = 4%). Defaults to 0 — stating it explicitly beats a hidden
-     * non-zero assumption. See docs/STRATEGY_MARKETPLACE.md.
-     */
     riskFreeRate: parseFloat(process.env.STRATEGY_RISK_FREE_RATE || '0'),
   },
   attribution: {
-    /**
-     * Interval between performance-attribution recomputations in ms (default:
-     * 6 hours, matching strategyMarketplace). Inputs are daily
-     * YieldSnapshot/ProtocolRate series, so faster buys nothing but load. See
-     * docs/PERFORMANCE_ATTRIBUTION.md.
-     */
     intervalMs: parseInt(process.env.ATTRIBUTION_INTERVAL_MS || '21600000'),
-    /**
-     * The v1 benchmark is the equal-weighted average of every protocol with
-     * ProtocolRate history. A comma-separated protocol-name subset narrows
-     * that universe (e.g. "Aave,Blend" for a stablecoin-only benchmark);
-     * empty/unset means every protocol. Read at compute time, and the
-     * resulting `benchmarkVersion` on each report names which subset was
-     * used, so a later config change never silently reinterprets old rows.
-     */
     benchmarkProtocols: (process.env.ATTRIBUTION_BENCHMARK_PROTOCOLS || '')
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
   },
   allocationSuggestions: {
-    /**
-     * Interval between precomputed allocation-suggestion refreshes in ms
-     * (default: 6 hours, matching protocolRisk and strategyMetrics). Inputs are
-     * daily APY series and a risk-score table refreshed on the same cadence, so
-     * anything faster recomputes identical numbers.
-     */
     intervalMs: parseInt(
       process.env.ALLOCATION_SUGGESTION_INTERVAL_MS || '21600000'
     ),
-    /**
-     * Global cap on simultaneously-running optimizations in this process. Small
-     * on purpose: each one occupies the single event-loop thread, so this is a
-     * bound on how long an unrelated request can be stuck behind analytics
-     * work. See src/utils/concurrency.ts.
-     */
     maxConcurrent: parseInt(
       process.env.ALLOCATION_SUGGESTION_MAX_CONCURRENT || '2'
     ),
-    /**
-     * Users processed per batch by the scheduled job, with a serial await per
-     * user inside a batch — same loop shape as the neighbouring jobs, so a large
-     * user table cannot monopolize the event loop in one tick.
-     */
     batchSize: parseInt(process.env.ALLOCATION_SUGGESTION_BATCH_SIZE || '25'),
   },
   referral: {
-    /**
-     * Minimum confirmed deposit (in asset units) that a referred user must make
-     * for their referral to activate. Activation is single-deposit: one
-     * confirmed deposit Transaction must cross this threshold on its own. Guards
-     * against dust self-referral farming.
-     */
     minActivationDeposit: parseFloat(
       process.env.REFERRAL_MIN_ACTIVATION_DEPOSIT || '10'
     ),
-    /** Reward paid to the referrer on activation (asset units). */
     ownerReward: parseFloat(process.env.REFERRAL_OWNER_REWARD || '5'),
-    /** Reward paid to the referred user on activation (asset units). 0 disables. */
     referredReward: parseFloat(process.env.REFERRAL_REFERRED_REWARD || '5'),
-    /** Asset symbol rewards are denominated in — must be a supported asset. */
     rewardAsset: process.env.REFERRAL_REWARD_ASSET || 'USDC',
-    /**
-     * Vault/treasury contract method invoked to transfer a reward into a user's
-     * wallet, reusing executeWriteContractCall signed by the agent keypair. The
-     * on-chain method itself lives in the contract repo; kept configurable so
-     * this backend does not hard-code a method that may be renamed there.
-     */
     rewardContractMethod:
       process.env.REFERRAL_REWARD_CONTRACT_METHOD || 'transfer_reward',
-    /** Interval between referral payout sweeps in ms (default: 2 minutes). */
     payoutIntervalMs: parseInt(
       process.env.REFERRAL_PAYOUT_INTERVAL_MS || '120000'
     ),
   },
   recurringDeposits: {
-    /** How often (ms) to poll for due recurring deposit plans (default: 5 minutes). */
     intervalMs: parseInt(
       process.env.RECURRING_DEPOSITS_INTERVAL_MS || '300000'
     ),
   },
   outbox: {
-    /**
-     * How often (ms) the background dispatcher sweeps for PENDING ops left
-     * behind by a crash (or whose backoff window has elapsed) and for
-     * SUBMITTED ops that have gone quiet long enough to need a fee-bump or
-     * escalation (default: 15 seconds). See docs/OUTBOX.md.
-     */
     dispatchIntervalMs: parseInt(
       process.env.OUTBOX_DISPATCH_INTERVAL_MS || '15000'
     ),
-    /** Attempts before a PENDING op is given up on and moved to FAILED. */
     maxAttempts: parseInt(process.env.OUTBOX_MAX_ATTEMPTS || '5'),
-    /** Full-jitter exponential backoff bounds (ms) between submit attempts. */
     backoffBaseMs: parseInt(process.env.OUTBOX_BACKOFF_BASE_MS || '2000'),
     backoffMaxMs: parseInt(process.env.OUTBOX_BACKOFF_MAX_MS || '120000'),
-    /**
-     * How long (ms) a SUBMITTED op may sit unconfirmed before the dispatcher
-     * treats it as congested and resubmits at a higher fee (default: 90s —
-     * comfortably past normal Stellar ledger close time).
-     */
     submittedTimeoutMs: parseInt(
       process.env.OUTBOX_SUBMITTED_TIMEOUT_MS || '90000'
     ),
-    /** Fee multiplier applied on each fee-bump resubmission (compounds). */
     feeBumpMultiplier: parseFloat(
       process.env.OUTBOX_FEE_BUMP_MULTIPLIER || '2'
     ),
-    /** Hard cap on fee-bump resubmissions before a stuck op is escalated to FAILED. */
     feeBumpMaxAttempts: parseInt(
       process.env.OUTBOX_FEE_BUMP_MAX_ATTEMPTS || '3'
     ),
-    /** Global cap on ops in flight (claimed, not yet CONFIRMED/FAILED) at once. */
     globalMaxInFlight: parseInt(
       process.env.OUTBOX_GLOBAL_MAX_IN_FLIGHT || '10'
     ),
-    /** Per-signer (per Stellar account) cap on ops in flight at once. */
     perAccountMaxInFlight: parseInt(
       process.env.OUTBOX_PER_ACCOUNT_MAX_IN_FLIGHT || '1'
     ),
-    /** Ops claimed per dispatcher sweep, priority-ordered (see src/outbox/stateMachine.ts). */
     batchSize: parseInt(process.env.OUTBOX_BATCH_SIZE || '20'),
   },
 }
