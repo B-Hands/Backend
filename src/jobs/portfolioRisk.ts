@@ -19,7 +19,7 @@ import db from '../db'
 import { logger } from '../utils/logger'
 import { config } from '../config/env'
 import { alertingService } from '../services/alerting'
-import { getPortfolioRisk, upsertUserRiskAggregate, type RiskWindow } from '../analytics/service'
+import { getPortfolioRisk, upsertUserRiskAggregate, type RiskWindow } from '../analytics/riskService'
 
 const WINDOWS: RiskWindow[] = ['7d', '30d', '90d']
 const MAX_RETRIES = 3
@@ -129,8 +129,7 @@ async function runWithRetry(attempt = 1): Promise<void> {
  * @returns NodeJS.Timeout handle — pass to clearInterval in gracefulShutdown.
  */
 export function schedulePortfolioRiskJob(): NodeJS.Timeout {
-  const intervalHours = config.analytics.portfolioRiskIntervalHours
-  const intervalMs = intervalHours * 60 * 60 * 1000
+  const intervalMs = config.portfolioRisk?.intervalMs ?? 21600000
 
   // Run once at startup (non-blocking)
   runWithRetry().catch((err) => {
@@ -143,6 +142,6 @@ export function schedulePortfolioRiskJob(): NodeJS.Timeout {
     })
   }, intervalMs)
 
-  logger.info(`[PortfolioRisk] Job scheduled every ${intervalHours}h`)
+  logger.info(`[PortfolioRisk] Job scheduled every ${intervalMs / (60 * 60 * 1000)}h`)
   return handle
 }

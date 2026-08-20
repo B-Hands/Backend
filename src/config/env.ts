@@ -247,6 +247,7 @@ function validateKeypairNetworkMatch(
 }
 
 /** Parse `CORS_ORIGINS` / `ALLOWED_ORIGINS` (comma-separated or `*`). */
+
 function parseCorsOrigins(): string[] | '*' {
   const raw = (process.env.CORS_ORIGINS ?? process.env.ALLOWED_ORIGINS)?.trim()
   if (!raw || raw === '*') return '*'
@@ -431,10 +432,6 @@ export const config = {
     twilioToken: process.env.TWILIO_AUTH_TOKEN || '',
     fromNumber: process.env.WHATSAPP_FROM || '',
   },
-  // Speech-to-text for WhatsApp voice notes (#288). The provider is swappable
-  // behind the TranscriptionProvider interface; these settings configure the
-  // default (OpenAI Whisper) implementation. Raw audio is never persisted —
-  // see docs/WHATSAPP_VOICE.md.
   transcription: {
     provider: process.env.TRANSCRIPTION_PROVIDER || 'openai',
     openaiApiKey: process.env.OPENAI_API_KEY || '',
@@ -442,17 +439,13 @@ export const config = {
     apiUrl:
       process.env.TRANSCRIPTION_API_URL ||
       'https://api.openai.com/v1/audio/transcriptions',
-    /**
-     * Minimum transcription confidence (0–1) required to act on a voice note.
-     * Below this the bot asks the user to repeat or type rather than guessing.
-     */
     confidenceThreshold: parseFloat(
       process.env.TRANSCRIPTION_CONFIDENCE_THRESHOLD || '0.6'
     ),
   },
   dlq: {
     alertThreshold: parseInt(process.env.DLQ_ALERT_THRESHOLD || '50'),
-    alertCooldownMs: parseInt(process.env.DLQ_ALERT_COOLDOWN_MS || '900000'), // 15 minutes default
+    alertCooldownMs: parseInt(process.env.DLQ_ALERT_COOLDOWN_MS || '900000'),
   },
   httpClient: {
     timeoutMs: parseInt(process.env.HTTP_CLIENT_TIMEOUT_MS || '10000'),
@@ -467,28 +460,89 @@ export const config = {
     ),
   },
   shutdown: {
-    /** Grace period (ms) for in-force requests to complete before force-exit */
     drainTimeoutMs: parseInt(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS || '30000'),
   },
   retention: {
-    /** How many days to keep processed_events rows (default: 90 days) */
     processedEventsDays: parseInt(
       process.env.RETENTION_PROCESSED_EVENTS_DAYS || '90'
     ),
-    /** How many days to keep RESOLVED dead_letter_events (default: 30 days) */
     deadLetterEventsDays: parseInt(
       process.env.RETENTION_DEAD_LETTER_EVENTS_DAYS || '30'
     ),
-    /** How many days to keep agent_logs rows (default: 60 days) */
     agentLogsDays: parseInt(process.env.RETENTION_AGENT_LOGS_DAYS || '60'),
-    /** Interval between retention job runs in ms (default: 24 hours) */
     intervalMs: parseInt(process.env.RETENTION_INTERVAL_MS || '86400000'),
   },
-  analytics: {
-    /**
-     * PORTFOLIO_RISK_INTERVAL_HOURS: how often the portfolioRisk job
-     * recomputes and persists per-user risk metrics (default: 6 hours).
-     */
-    portfolioRiskIntervalHours: parseInt(process.env.PORTFOLIO_RISK_INTERVAL_HOURS || '6'),
+  protocolRisk: {
+    intervalMs: parseInt(process.env.PROTOCOL_RISK_INTERVAL_MS || '21600000'),
+  },
+  portfolioRisk: {
+    intervalMs: parseInt(process.env.PORTFOLIO_RISK_INTERVAL_MS || '21600000'),
+  },
+  alertRules: {
+    intervalMs: parseInt(process.env.ALERT_RULES_INTERVAL_MS || '60000'),
+  },
+  strategyMarketplace: {
+    metricsIntervalMs: parseInt(
+      process.env.STRATEGY_METRICS_INTERVAL_MS || '21600000'
+    ),
+    riskFreeRate: parseFloat(process.env.STRATEGY_RISK_FREE_RATE || '0'),
+  },
+  attribution: {
+    intervalMs: parseInt(process.env.ATTRIBUTION_INTERVAL_MS || '21600000'),
+    benchmarkProtocols: (process.env.ATTRIBUTION_BENCHMARK_PROTOCOLS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  },
+  allocationSuggestions: {
+    intervalMs: parseInt(
+      process.env.ALLOCATION_SUGGESTION_INTERVAL_MS || '21600000'
+    ),
+    maxConcurrent: parseInt(
+      process.env.ALLOCATION_SUGGESTION_MAX_CONCURRENT || '2'
+    ),
+    batchSize: parseInt(process.env.ALLOCATION_SUGGESTION_BATCH_SIZE || '25'),
+  },
+  referral: {
+    minActivationDeposit: parseFloat(
+      process.env.REFERRAL_MIN_ACTIVATION_DEPOSIT || '10'
+    ),
+    ownerReward: parseFloat(process.env.REFERRAL_OWNER_REWARD || '5'),
+    referredReward: parseFloat(process.env.REFERRAL_REFERRED_REWARD || '5'),
+    rewardAsset: process.env.REFERRAL_REWARD_ASSET || 'USDC',
+    rewardContractMethod:
+      process.env.REFERRAL_REWARD_CONTRACT_METHOD || 'transfer_reward',
+    payoutIntervalMs: parseInt(
+      process.env.REFERRAL_PAYOUT_INTERVAL_MS || '120000'
+    ),
+  },
+  recurringDeposits: {
+    intervalMs: parseInt(
+      process.env.RECURRING_DEPOSITS_INTERVAL_MS || '300000'
+    ),
+  },
+  outbox: {
+    dispatchIntervalMs: parseInt(
+      process.env.OUTBOX_DISPATCH_INTERVAL_MS || '15000'
+    ),
+    maxAttempts: parseInt(process.env.OUTBOX_MAX_ATTEMPTS || '5'),
+    backoffBaseMs: parseInt(process.env.OUTBOX_BACKOFF_BASE_MS || '2000'),
+    backoffMaxMs: parseInt(process.env.OUTBOX_BACKOFF_MAX_MS || '120000'),
+    submittedTimeoutMs: parseInt(
+      process.env.OUTBOX_SUBMITTED_TIMEOUT_MS || '90000'
+    ),
+    feeBumpMultiplier: parseFloat(
+      process.env.OUTBOX_FEE_BUMP_MULTIPLIER || '2'
+    ),
+    feeBumpMaxAttempts: parseInt(
+      process.env.OUTBOX_FEE_BUMP_MAX_ATTEMPTS || '3'
+    ),
+    globalMaxInFlight: parseInt(
+      process.env.OUTBOX_GLOBAL_MAX_IN_FLIGHT || '10'
+    ),
+    perAccountMaxInFlight: parseInt(
+      process.env.OUTBOX_PER_ACCOUNT_MAX_IN_FLIGHT || '1'
+    ),
+    batchSize: parseInt(process.env.OUTBOX_BATCH_SIZE || '20'),
   },
 }

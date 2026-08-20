@@ -1,393 +1,419 @@
 /**
- * src/analytics/service.ts
+ * Allocation-suggestion and risk analytics service (#225, #322) — the DB glue around pure cores.
  *
- * Database I/O layer for the portfolio risk analytics engine.
+ * ─── THE ADVISORY INVARIANT ──────────────────────────────────────────────────
  *
- * CONTRACT
- * ─────────
- * • This is the ONLY file that reads YieldSnapshot rows to build value series.
- * • Enforces the 90-day retention bound: windows longer than the available
- *   data are relabelled with `insufficientHistory: true` — they are NEVER
- *   silently served under the requested label.
- * • Aggregates portfolio value as sum(principalAmount + yieldAmount) across
- *   all YieldSnapshot rows sharing an exact snapshotAt for a given userId.
- * • User-scoped queries are strictly user-scoped end-to-end.
+ * This module MUST NOT write User.strategyConfig, User.rebalanceStrategy, or any
+ * other field the agent loop reads. A suggestion is computed, persisted to
+ * AllocationSuggestion, and returned for display. Applying it is a separate,
+ * deliberate act by the user through the existing strategy update path, which
+ * already validates the config (publishableConfigSchema) and already logs the
+ * change.
  */
 
+import crypto from 'crypto'
+import { Prisma } from '@prisma/client'
 import db from '../db'
 import { logger } from '../utils/logger'
+import { buildDailyRateSeries, runBacktest } from '../agent/backtest'
+import { TargetAllocationStrategy } from '../agent/strategies'
 import {
-  computeAllMetrics,
-  computePeriodReturns,
-  inferPeriodsPerYear,
-  rollingVolatility,
-  rollingDrawdown,
-  type ValuePoint,
-  type RiskMetrics,
-  type RollingVolPoint,
-  type RollingDrawdownPoint,
-} from './metrics'
+  parseStrategyConfig,
+  stricterRiskCeiling,
+} from '../agent/effectiveStrategy'
+import { estimate, DEFAULT_LOOKBACK_DAYS } from './estimation'
+import { optimize, toPercentageAllocations } from './optimizer'
+import {
+  AllocationSuggestionResult,
+  BacktestComparison,
+  OptimizationOutcome,
+  RawRateObservation,
+  RiskScoreRow,
+} from './types'
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-/** Hard-delete boundary in snapshotter.ts — we cannot honestly serve beyond this. */
-export const SNAPSHOT_RETENTION_DAYS = 90
-
-/** Valid request windows. */
-export type RiskWindow = '7d' | '30d' | '90d'
-
-export function windowToDays(w: RiskWindow): number {
-  return w === '7d' ? 7 : w === '30d' ? 30 : 90
-}
-
-// ─── Return types ─────────────────────────────────────────────────────────────
-
-export interface PortfolioRiskResult {
-  userId: string
-  requestedWindow: RiskWindow
-  /** Actual data window used — may be shorter than requested. */
-  actualWindowDays: number
-  /** True if the available history is shorter than the requested window. */
-  insufficientHistory: boolean
-  /** ISO timestamp of earliest snapshot included. */
-  dataFrom: string | null
-  /** ISO timestamp of latest snapshot included. */
-  dataTo: string | null
-  metrics: RiskMetrics | null
-  computedAt: string
-}
-
-export interface TimeseriesResult {
-  userId: string
-  requestedWindow: RiskWindow
-  insufficientHistory: boolean
-  rollingVolatility: RollingVolPoint[]
-  drawdown: RollingDrawdownPoint[]
-  computedAt: string
-}
-
-// ─── Portfolio value series builder ──────────────────────────────────────────
 
 /**
- * Build a portfolio-value series for a user over a date window.
- *
- * Aggregation: for each unique snapshotAt timestamp, sum
- * (principalAmount + yieldAmount) across all positions belonging to the user.
- * This is the "correct input series" documented in the issue — not raw APY.
- *
- * Positions must belong to userId — query is scoped via the Position relation.
+ * Notional starting capital for the backtest comparison when the user has no
+ * position value to anchor to. The comparison is about RELATIVE performance of
+ * two configs over identical history, so the absolute figure is arbitrary —
+ * fixed rather than random so the same inputs give the same output.
  */
-async function buildUserValueSeries(
-  userId: string,
-  fromDate: Date,
-  toDate: Date
-): Promise<ValuePoint[]> {
-  const snapshots = await db.yieldSnapshot.findMany({
-    where: {
-      position: { userId },
-      snapshotAt: { gte: fromDate, lte: toDate },
-    },
-    select: {
-      snapshotAt: true,
-      principalAmount: true,
-      yieldAmount: true,
-    },
-    orderBy: { snapshotAt: 'asc' },
+const DEFAULT_BACKTEST_NOTIONAL = 10_000
+
+/**
+ * The caveat that ships with every backtest comparison. Not optional garnish:
+ * without it the comparison reads as "this allocation would have earned X",
+ * which is not what was simulated. See computeBacktestComparison.
+ */
+export const BACKTEST_CAVEAT =
+  'The agent holds one protocol at a time, so this compares what the agent WOULD HAVE DONE under each configuration — it is not a simulation of holding the weighted basket.'
+
+/** The advisory disclaimer returned with every suggestion. */
+export const ADVISORY_DISCLAIMER =
+  'This is a suggestion only. It has not changed your strategy, and no funds have moved. Optimization minimizes YIELD volatility from historical APY data; it does not model principal loss, depeg, or smart-contract failure.'
+
+export class SuggestionUserNotFoundError extends Error {
+  constructor(userId: string) {
+    super(`User ${userId} not found`)
+    this.name = 'SuggestionUserNotFoundError'
+  }
+}
+
+interface EffectiveInputs {
+  riskTolerance: number
+  effectiveRiskCeiling: number | undefined
+  currentAllocations: Record<string, number> | undefined
+  /** Which layer supplied the ceiling — surfaced so the API can explain it. */
+  ceilingSource: 'goal' | 'follow' | 'own' | 'none'
+}
+
+/**
+ * Resolve the user's effective optimizer inputs from their own config, the
+ * config they follow, and any ACTIVE savings goal. Pure precedence logic; the
+ * three reads are done by the caller so this stays independently testable.
+ */
+export function resolveEffectiveInputs(
+  riskTolerance: number,
+  ownConfigRaw: unknown,
+  followedConfigRaw: unknown | null,
+  goalRiskCeiling: number | null
+): EffectiveInputs {
+  const own = parseStrategyConfig(ownConfigRaw)
+  const followed = followedConfigRaw
+    ? parseStrategyConfig(followedConfigRaw)
+    : null
+
+  // Rule 1: a follow may only tighten.
+  const merged = stricterRiskCeiling(own.riskCeiling, followed?.riskCeiling)
+
+  // Rule 2: an active goal overrides outright.
+  const effectiveRiskCeiling = goalRiskCeiling ?? merged
+
+  const ceilingSource: EffectiveInputs['ceilingSource'] =
+    goalRiskCeiling !== null && goalRiskCeiling !== undefined
+      ? 'goal'
+      : merged === undefined
+        ? 'none'
+        : followed?.riskCeiling !== undefined && merged === followed.riskCeiling
+          ? 'follow'
+          : 'own'
+
+  const currentAllocations = followed?.strategyName
+    ? followed.targetAllocations
+    : (followed?.targetAllocations ?? own.targetAllocations)
+
+  return {
+    riskTolerance,
+    effectiveRiskCeiling,
+    currentAllocations,
+    ceilingSource,
+  }
+}
+
+/**
+ * Canonical input-snapshot hash.
+ */
+export function computeInputHash(input: {
+  protocols: string[]
+  expectedReturns: number[]
+  covariance: number[][]
+  riskTolerance: number
+  effectiveRiskCeiling: number | undefined
+  lookbackDays: number
+}): string {
+  const round = (n: number): string => n.toFixed(9)
+
+  const canonical = JSON.stringify({
+    protocols: input.protocols,
+    mu: input.expectedReturns.map(round),
+    sigma: input.covariance.map((row) => row.map(round)),
+    riskTolerance: input.riskTolerance,
+    riskCeiling: input.effectiveRiskCeiling ?? null,
+    lookbackDays: input.lookbackDays,
   })
 
-  // Bucket by exact snapshotAt (epoch ms) and sum values
-  const buckets = new Map<number, number>()
-  for (const s of snapshots) {
-    const key = s.snapshotAt.getTime()
-    const value =
-      Number(s.principalAmount) + Number(s.yieldAmount)
-    buckets.set(key, (buckets.get(key) ?? 0) + value)
-  }
-
-  return Array.from(buckets.entries())
-    .sort(([a], [b]) => a - b)
-    .map(([timestampMs, value]) => ({ timestampMs, value }))
+  return 'sha256:' + crypto.createHash('sha256').update(canonical).digest('hex')
 }
 
-// ─── Retention-bound check ────────────────────────────────────────────────────
-
 /**
- * Determine whether the requested window exceeds available retention.
- * Returns the honest available span in days (capped at SNAPSHOT_RETENTION_DAYS).
+ * Backtest both configurations over the same history.
  */
-function resolveWindow(
-  requestedWindow: RiskWindow,
-  oldestSnapshotDate: Date | null,
+export async function computeBacktestComparison(
+  suggestedPercentages: Record<string, number>,
+  currentAllocations: Record<string, number> | undefined,
+  rates: RawRateObservation[],
+  riskCeiling: number | undefined,
+  riskScores: Record<string, number>,
+  userId: string,
+  startingAmount: number,
   now: Date
-): { actualDays: number; insufficientHistory: boolean } {
-  const requestedDays = windowToDays(requestedWindow)
-  const maxDays = SNAPSHOT_RETENTION_DAYS
+): Promise<BacktestComparison | null> {
+  if (Object.keys(suggestedPercentages).length === 0) return null
 
-  if (!oldestSnapshotDate) {
-    return { actualDays: 0, insufficientHistory: true }
-  }
-
-  const availableDays = Math.ceil(
-    (now.getTime() - oldestSnapshotDate.getTime()) / (24 * 60 * 60 * 1000)
+  const MS_PER_DAY = 24 * 60 * 60 * 1000
+  const endDate = new Date(Math.floor(now.getTime() / MS_PER_DAY) * MS_PER_DAY)
+  const startDate = new Date(
+    endDate.getTime() - (DEFAULT_LOOKBACK_DAYS - 1) * MS_PER_DAY
   )
 
-  const actualDays = Math.min(requestedDays, availableDays, maxDays)
-  const insufficientHistory = availableDays < requestedDays
+  const { series } = buildDailyRateSeries(rates, startDate, endDate)
 
-  return { actualDays, insufficientHistory }
+  const firstPopulated = series.findIndex((d) => d.protocols.length > 0)
+  if (firstPopulated === -1) return null
+  const trimmed = series.slice(firstPopulated)
+
+  const effectiveStart = trimmed[0].date
+  if (endDate.getTime() <= effectiveStart.getTime()) return null
+
+  const strategy = new TargetAllocationStrategy()
+
+  const runLeg = async (
+    targetAllocations: Record<string, number>
+  ): Promise<BacktestComparison['suggested'] | null> => {
+    const outcome = await runBacktest(strategy, trimmed, {
+      strategyName: 'TARGET_ALLOCATION',
+      startDate: effectiveStart,
+      endDate,
+      startingAmount,
+      userStrategyPreferences: [{ userId, targetAllocations }],
+      riskCeiling,
+      protocolRiskScores: riskScores,
+    })
+    if (outcome.status !== 'ok') return null
+    return {
+      finalValue: outcome.result.summary.finalValue,
+      realizedApy: outcome.result.summary.realizedApy,
+      maxDrawdownPercent: outcome.result.summary.maxDrawdownPercent,
+      rebalanceCount: outcome.result.rebalanceEvents.length,
+      finalProtocol: outcome.result.finalProtocol,
+    }
+  }
+
+  const suggested = await runLeg(suggestedPercentages)
+  if (!suggested) return null
+
+  const current =
+    currentAllocations && Object.keys(currentAllocations).length > 0
+      ? await runLeg(currentAllocations)
+      : null
+
+  return {
+    suggested,
+    current,
+    startDate: effectiveStart.toISOString().slice(0, 10),
+    endDate: endDate.toISOString().slice(0, 10),
+    startingAmount,
+    caveat: BACKTEST_CAVEAT,
+  }
 }
 
-// ─── Public API ───────────────────────────────────────────────────────────────
-
 /**
- * Compute portfolio risk metrics for a user.
- *
- * @param userId - Authenticated user's ID (ownership is enforced by the caller).
- * @param window - Requested analysis window.
+ * Compute (and persist) an allocation suggestion for one user.
  */
-export async function getPortfolioRisk(
+export async function suggestAllocation(
   userId: string,
-  window: RiskWindow
-): Promise<PortfolioRiskResult> {
-  const computedAt = new Date().toISOString()
-  const now = new Date()
+  options: {
+    now?: Date
+    persist?: boolean
+    runBacktest?: boolean
+    lookbackDays?: number
+    frontierPoints?: number
+  } = {}
+): Promise<AllocationSuggestionResult> {
+  const now = options.now ?? new Date()
+  const persist = options.persist ?? true
+  const wantBacktest = options.runBacktest ?? true
+  const lookbackDays = options.lookbackDays ?? DEFAULT_LOOKBACK_DAYS
 
-  try {
-    // Find the oldest snapshot to determine available history
-    const oldestSnapshot = await db.yieldSnapshot.findFirst({
-      where: { position: { userId } },
-      orderBy: { snapshotAt: 'asc' },
-      select: { snapshotAt: true },
-    })
+  const user = await db.user.findUnique({
+    where: { id: userId },
+    select: { id: true, riskTolerance: true, strategyConfig: true },
+  })
+  if (!user) throw new SuggestionUserNotFoundError(userId)
 
-    const { actualDays, insufficientHistory } = resolveWindow(
-      window,
-      oldestSnapshot?.snapshotAt ?? null,
+  const [follow, goal] = await Promise.all([
+    db.strategyFollow.findFirst({
+      where: { followerUserId: userId, unfollowedAt: null },
+      select: { appliedConfig: true },
+    }),
+    db.savingsGoal.findFirst({
+      where: { userId, status: 'ACTIVE' },
+      select: { riskCeiling: true },
+    }),
+  ])
+
+  const effective = resolveEffectiveInputs(
+    user.riskTolerance,
+    user.strategyConfig,
+    follow?.appliedConfig ?? null,
+    goal?.riskCeiling ?? null
+  )
+
+  const MS_PER_DAY = 24 * 60 * 60 * 1000
+  const since = new Date(now.getTime() - lookbackDays * MS_PER_DAY)
+
+  const [rateRows, scoreRows] = await Promise.all([
+    db.protocolRate.findMany({
+      where: { fetchedAt: { gte: since } },
+      select: {
+        protocolName: true,
+        assetSymbol: true,
+        supplyApy: true,
+        fetchedAt: true,
+      },
+    }),
+    db.protocolRiskScore.findMany({
+      select: {
+        protocolName: true,
+        score: true,
+        insufficientHistory: true,
+      },
+    }),
+  ])
+
+  const rates: RawRateObservation[] = rateRows.map((r) => ({
+    protocolName: r.protocolName,
+    assetSymbol: r.assetSymbol,
+    apy: Number(r.supplyApy),
+    date: r.fetchedAt,
+  }))
+  const riskScores: RiskScoreRow[] = scoreRows.map((s) => ({
+    protocolName: s.protocolName,
+    score: s.score,
+    insufficientHistory: s.insufficientHistory,
+  }))
+
+  const estimation = estimate({
+    rates,
+    riskScores,
+    lookbackDays,
+    riskCeiling: effective.effectiveRiskCeiling,
+    now,
+  })
+
+  const outcome = optimize(
+    {
+      protocols: estimation.protocols,
+      expectedReturns: estimation.expectedReturns,
+      covariance: estimation.covariance,
+      riskTolerance: effective.riskTolerance,
+      riskScores: estimation.riskScores,
+      frontierPoints: options.frontierPoints,
+    },
+    estimation.excluded
+  )
+
+  const inputHash = computeInputHash({
+    protocols: estimation.protocols,
+    expectedReturns: estimation.expectedReturns,
+    covariance: estimation.covariance,
+    riskTolerance: effective.riskTolerance,
+    effectiveRiskCeiling: effective.effectiveRiskCeiling,
+    lookbackDays,
+  })
+
+  const weights =
+    outcome.status === 'ok'
+      ? toPercentageAllocations(outcome.weights)
+      : outcome.status === 'non_converged'
+        ? toPercentageAllocations(outcome.bestFeasibleWeights)
+        : {}
+
+  let backtest: BacktestComparison | null = null
+  if (wantBacktest && Object.keys(weights).length > 0) {
+    const startingAmount = await resolveNotional(userId)
+    backtest = await computeBacktestComparison(
+      weights,
+      effective.currentAllocations,
+      rates,
+      effective.effectiveRiskCeiling,
+      estimation.riskScores,
+      userId,
+      startingAmount,
       now
     )
-
-    const fromDate = new Date(now.getTime() - actualDays * 24 * 60 * 60 * 1000)
-
-    const series = await buildUserValueSeries(userId, fromDate, now)
-
-    const metrics = computeAllMetrics(series)
-
-    return {
-      userId,
-      requestedWindow: window,
-      actualWindowDays: actualDays,
-      insufficientHistory,
-      dataFrom: series[0]
-        ? new Date(series[0].timestampMs).toISOString()
-        : null,
-      dataTo: series[series.length - 1]
-        ? new Date(series[series.length - 1]!.timestampMs).toISOString()
-        : null,
-      metrics,
-      computedAt,
-    }
-  } catch (error) {
-    logger.error('[Analytics] getPortfolioRisk failed', {
-      userId,
-      window,
-      error: error instanceof Error ? error.message : String(error),
-    })
-    throw error
-  }
-}
-
-/**
- * Get timeseries data (rolling volatility + drawdown) for a user.
- *
- * @param userId - Authenticated user's ID.
- * @param window - Requested analysis window.
- * @param rollingWindowSize - Number of observations per rolling window (default 7).
- */
-export async function getPortfolioTimeseries(
-  userId: string,
-  window: RiskWindow,
-  rollingWindowSize = 7
-): Promise<TimeseriesResult> {
-  const now = new Date()
-
-  const oldestSnapshot = await db.yieldSnapshot.findFirst({
-    where: { position: { userId } },
-    orderBy: { snapshotAt: 'asc' },
-    select: { snapshotAt: true },
-  })
-
-  const { actualDays, insufficientHistory } = resolveWindow(
-    window,
-    oldestSnapshot?.snapshotAt ?? null,
-    now
-  )
-
-  const fromDate = new Date(now.getTime() - actualDays * 24 * 60 * 60 * 1000)
-  const series = await buildUserValueSeries(userId, fromDate, now)
-
-  if (series.length < 2) {
-    return {
-      userId,
-      requestedWindow: window,
-      insufficientHistory: true,
-      rollingVolatility: [],
-      drawdown: [],
-      computedAt: now.toISOString(),
-    }
   }
 
-  const periodsPerYear = inferPeriodsPerYear(series) ?? 365
-  const returns = computePeriodReturns(series)
-  // Timestamps for rolling vol correspond to end-of-period (index i+1 in sorted series)
-  const returnTimestamps = series.slice(1).map((p) => p.timestampMs)
-
-  const volSeries = rollingVolatility(returns, returnTimestamps, rollingWindowSize, periodsPerYear)
-  const drawdownSeries = rollingDrawdown(series)
-
-  return {
+  const result: AllocationSuggestionResult = {
+    isSuggestion: true,
+    disclaimer: ADVISORY_DISCLAIMER,
     userId,
-    requestedWindow: window,
-    insufficientHistory,
-    rollingVolatility: volSeries,
-    drawdown: drawdownSeries,
+    inputHash,
+    status: outcome.status,
+    weights,
+    outcome,
+    riskTolerance: effective.riskTolerance,
+    effectiveRiskCeiling: effective.effectiveRiskCeiling ?? null,
+    ceilingSource: effective.ceilingSource,
+    currentAllocations: effective.currentAllocations ?? null,
+    excluded: estimation.excluded,
+    observationCount: estimation.observationCount,
+    lookbackDays,
+    backtest,
     computedAt: now.toISOString(),
   }
-}
 
-/**
- * Compute risk metrics for a published strategy.
- *
- * Security & Privacy:
- * Derived from the strategy's own snapshots/positions — returns only relative risk
- * statistics (volatility, Sortino, VaR, drawdown), NEVER absolute currency values,
- * user IDs, or wallet addresses.
- *
- * @param publishedStrategyId - Identifier for the published strategy or protocol.
- * @param window - Requested analysis window.
- */
-export async function getStrategyRiskMetrics(
-  publishedStrategyId: string,
-  window: RiskWindow
-): Promise<{
-  publishedStrategyId: string
-  requestedWindow: RiskWindow
-  insufficientHistory: boolean
-  metrics: RiskMetrics | null
-  computedAt: string
-}> {
-  const now = new Date()
-
-  // Find snapshots associated with positions matching this strategy/protocol
-  const oldestSnapshot = await db.yieldSnapshot.findFirst({
-    where: {
-      OR: [
-        { positionId: publishedStrategyId },
-        { position: { protocolName: publishedStrategyId } },
-      ],
-    },
-    orderBy: { snapshotAt: 'asc' },
-    select: { snapshotAt: true },
-  })
-
-  const { actualDays, insufficientHistory } = resolveWindow(
-    window,
-    oldestSnapshot?.snapshotAt ?? null,
-    now
-  )
-
-  const fromDate = new Date(now.getTime() - actualDays * 24 * 60 * 60 * 1000)
-
-  const snapshots = await db.yieldSnapshot.findMany({
-    where: {
-      OR: [
-        { positionId: publishedStrategyId },
-        { position: { protocolName: publishedStrategyId } },
-      ],
-      snapshotAt: { gte: fromDate, lte: now },
-    },
-    select: {
-      snapshotAt: true,
-      principalAmount: true,
-      yieldAmount: true,
-    },
-    orderBy: { snapshotAt: 'asc' },
-  })
-
-  const buckets = new Map<number, number>()
-  for (const s of snapshots) {
-    const key = s.snapshotAt.getTime()
-    const val = Number(s.principalAmount) + Number(s.yieldAmount)
-    buckets.set(key, (buckets.get(key) ?? 0) + val)
+  if (persist) {
+    const row = await db.allocationSuggestion.create({
+      data: {
+        userId,
+        inputHash,
+        status: outcome.status,
+        weights,
+        frontier: (outcome.status === 'ok'
+          ? outcome.frontier
+          : []) as unknown as Prisma.InputJsonValue,
+        backtestSummary: backtest
+          ? (backtest as unknown as Prisma.InputJsonValue)
+          : undefined,
+        riskTolerance: effective.riskTolerance,
+        effectiveRiskCeiling: effective.effectiveRiskCeiling ?? null,
+        reason: describeOutcome(outcome),
+        computedAt: now,
+      },
+      select: { id: true },
+    })
+    result.id = row.id
   }
 
-  const series: ValuePoint[] = Array.from(buckets.entries())
-    .sort(([a], [b]) => a - b)
-    .map(([timestampMs, value]) => ({ timestampMs, value }))
+  logger.info('[Analytics] Allocation suggestion computed', {
+    userId,
+    status: outcome.status,
+    inputHash,
+    eligibleProtocols: estimation.protocols.length,
+    excludedCount: estimation.excluded.length,
+    riskCeiling: effective.effectiveRiskCeiling ?? null,
+    ceilingSource: effective.ceilingSource,
+    persisted: persist,
+  })
 
-  const metrics = computeAllMetrics(series)
+  return result
+}
 
-  return {
-    publishedStrategyId,
-    requestedWindow: window,
-    insufficientHistory,
-    metrics,
-    computedAt: now.toISOString(),
+async function resolveNotional(userId: string): Promise<number> {
+  const positions = await db.position.findMany({
+    where: { userId, status: 'ACTIVE' },
+    select: { currentValue: true },
+  })
+  const total = positions.reduce((s, p) => s + Number(p.currentValue), 0)
+  return total > 0 ? total : DEFAULT_BACKTEST_NOTIONAL
+}
+
+function describeOutcome(outcome: OptimizationOutcome): string | null {
+  switch (outcome.status) {
+    case 'ok':
+      return null
+    case 'infeasible':
+      return `${outcome.reason} (binding constraint: ${outcome.bindingConstraint})`
+    case 'insufficient_universe':
+      return `Only ${outcome.eligibleCount} protocol(s) eligible; at least 2 are required${
+        outcome.bindingConstraint
+          ? ` (binding constraint: ${outcome.bindingConstraint})`
+          : ''
+      }`
+    case 'non_converged':
+      return `Solver did not converge within ${outcome.iterations} iterations (residual ${outcome.residual.toExponential(3)}); returning the best feasible allocation found`
   }
 }
 
-// ─── Persisted aggregate helpers ─────────────────────────────────────────────
 
-/**
- * Fetch a precomputed risk aggregate for a user from the DB.
- * Used by the API routes to serve cached results without per-request compute.
- */
-export async function getPersistedUserRisk(
-  userId: string,
-  window: RiskWindow
-): Promise<any | null> {
-  return db.portfolioRiskAggregate.findFirst({
-    where: { userId, window },
-    orderBy: { computedAt: 'desc' },
-  })
-}
-
-/**
- * Upsert a precomputed risk aggregate for a user.
- * Called by the portfolioRisk scheduled job.
- */
-export async function upsertUserRiskAggregate(
-  userId: string,
-  window: RiskWindow,
-  data: {
-    insufficientHistory: boolean
-    sampleCount: number
-    annualisedVolatility: number | null
-    sortinoRatio: number | null
-    downsideDeviation: number | null
-    maxDrawdown: number | null
-    maxDrawdownDuration: number | null
-    varHistorical95: number | null
-    varHistorical99: number | null
-    varParametric95: number | null
-    varParametric99: number | null
-    cvarHistorical95: number | null
-    cvarHistorical99: number | null
-    beta: number | null
-    dataFrom: Date | null
-    dataTo: Date | null
-  }
-): Promise<void> {
-  await db.portfolioRiskAggregate.upsert({
-    where: { userId_window: { userId, window } },
-    update: {
-      ...data,
-      computedAt: new Date(),
-    },
-    create: {
-      userId,
-      window,
-      ...data,
-      computedAt: new Date(),
-    },
-  })
-}

@@ -44,6 +44,17 @@ import { logger } from './utils/logger'
 import { startAgentLoop, stopAgentLoop } from './agent/loop'
 import { connectDb } from './db'
 import { scheduleSessionCleanup } from './jobs/sessionCleanup'
+import { scheduleDataRetention } from './jobs/dataRetention'
+import { schedulePoolMetrics } from './jobs/poolMetrics'
+import { scheduleFiatReconciliation } from './jobs/fiatReconciliation'
+import { scheduleReferralPayout } from './jobs/referralPayout'
+import { scheduleRecurringDeposits } from './jobs/recurringDeposits'
+import { scheduleAlertRules } from './jobs/alertRules'
+import { scheduleStrategyMetrics } from './jobs/strategyMetrics'
+import { scheduleAllocationSuggestions } from './jobs/allocationSuggestions'
+import { scheduleAttribution } from './jobs/attribution'
+import { scheduleOutboxDispatcher } from './outbox/dispatcher'
+import { scheduleProtocolRiskScoring } from './jobs/protocolRiskScoring'
 import { schedulePortfolioRiskJob } from './jobs/portfolioRisk'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { validateStellarNetworkReady } from './config/readiness'
@@ -93,8 +104,19 @@ const serviceStatus: Record<string, ServiceStatus> = {
 
 let isShuttingDown = false
 let httpServer: Server | null = null
+let sessionCleanupHandle: NodeJS.Timeout | null = null
+let dataRetentionHandle: NodeJS.Timeout | null = null
+let poolMetricsHandle: NodeJS.Timeout | null = null
+let fiatReconciliationHandle: NodeJS.Timeout | null = null
+let referralPayoutHandle: NodeJS.Timeout | null = null
+let recurringDepositsHandle: NodeJS.Timeout | null = null
+let alertRulesHandle: NodeJS.Timeout | null = null
+let strategyMetricsHandle: NodeJS.Timeout | null = null
+let allocationSuggestionsHandle: NodeJS.Timeout | null = null
+let protocolRiskScoringHandle: NodeJS.Timeout | null = null
+let attributionHandle: NodeJS.Timeout | null = null
+let outboxDispatcherHandle: NodeJS.Timeout | null = null
 let portfolioRiskJobHandle: NodeJS.Timeout | null = null
-const REQUEST_DRAIN_TIMEOUT_MS = 30000
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
@@ -381,6 +403,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.info('[Shutdown] Outbox dispatcher timer cleared')
   }
 
+  if (portfolioRiskJobHandle) {
+    clearInterval(portfolioRiskJobHandle)
+    portfolioRiskJobHandle = null
+    logger.info('[Shutdown] Portfolio risk job timer cleared')
+  }
+
   if (!httpServer) {
     logger.warn('[Shutdown] No HTTP server to close')
     process.exit(0)
@@ -391,11 +419,6 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.info('[Shutdown] HTTP server closed')
 
     try {
-      if (portfolioRiskJobHandle) {
-        clearInterval(portfolioRiskJobHandle)
-        logger.info('[Shutdown] Portfolio risk job stopped')
-      }
-
       logger.info('[Shutdown] Stopping event listener...')
       stopEventListener()
 
@@ -536,8 +559,19 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
   process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
-  // Non-critical jobs start after the server is up
-  scheduleSessionCleanup()
+  sessionCleanupHandle = scheduleSessionCleanup()
+  dataRetentionHandle = scheduleDataRetention()
+  poolMetricsHandle = schedulePoolMetrics()
+  fiatReconciliationHandle = scheduleFiatReconciliation()
+  referralPayoutHandle = scheduleReferralPayout()
+  recurringDepositsHandle = scheduleRecurringDeposits()
+  alertRulesHandle = scheduleAlertRules()
+  strategyMetricsHandle = scheduleStrategyMetrics()
+  // Ordered before the suggestion job so the first suggestion run sees freshly
+  // scored protocols rather than whatever was last left in the table.
+  protocolRiskScoringHandle = scheduleProtocolRiskScoring()
+  allocationSuggestionsHandle = scheduleAllocationSuggestions()
+  attributionHandle = scheduleAttribution()
   portfolioRiskJobHandle = schedulePortfolioRiskJob()
 }
 

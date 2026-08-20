@@ -25,7 +25,22 @@
  * Both are documented; callers must choose knowingly.
  */
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+export type RiskWindow = '7d' | '30d' | '60d' | '90d'
+
+export function parseRiskWindowDays(window: RiskWindow): number {
+  switch (window) {
+    case '7d':
+      return 7
+    case '30d':
+      return 30
+    case '60d':
+      return 60
+    case '90d':
+      return 90
+    default:
+      return 90
+  }
+}
 
 /** A timestamped portfolio value observation. */
 export interface ValuePoint {
