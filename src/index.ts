@@ -9,6 +9,7 @@ import { logger } from './utils/logger'
 import { startAgentLoop, stopAgentLoop } from './agent/loop'
 import { connectDb } from './db'
 import { scheduleSessionCleanup } from './jobs/sessionCleanup'
+import { schedulePortfolioRiskJob } from './jobs/portfolioRisk'
 import { startEventListener, stopEventListener } from './stellar/events'
 import healthRouter from './routes/health'
 import agentRouter from './routes/agent'
@@ -44,6 +45,7 @@ const serviceStatus: Record<string, ServiceStatus> = {
 
 let isShuttingDown = false
 let httpServer: Server | null = null
+let portfolioRiskJobHandle: NodeJS.Timeout | null = null
 const REQUEST_DRAIN_TIMEOUT_MS = 30000
 
 function allServicesReady(): boolean {
@@ -155,6 +157,11 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.info('[Shutdown] HTTP server closed')
 
     try {
+      if (portfolioRiskJobHandle) {
+        clearInterval(portfolioRiskJobHandle)
+        logger.info('[Shutdown] Portfolio risk job stopped')
+      }
+
       logger.info('[Shutdown] Stopping event listener...')
       stopEventListener()
 
@@ -281,6 +288,7 @@ async function main(): Promise<void> {
 
   // Non-critical jobs start after the server is up
   scheduleSessionCleanup()
+  portfolioRiskJobHandle = schedulePortfolioRiskJob()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────
