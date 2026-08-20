@@ -170,9 +170,10 @@ components:
           enum: ['precomputed', 'live']
           description: Whether the response was served from the precomputed cache.
         metrics:
-          nullable: true
           allOf:
             - $ref: '#/components/schemas/RiskMetrics'
+            - nullable: true
+              type: object
           description: null when sampleCount is 0 (entirely un-funded history).
       required:
         - userId
@@ -512,6 +513,7 @@ paths:
       summary: Protocol APY history
       description: Returns historical APY rates per protocol. Public endpoint (no auth required).
       tags: [Analytics]
+      security: []
       parameters:
         - name: period
           in: query
@@ -541,6 +543,7 @@ paths:
       summary: Liveness probe
       description: Always returns 200 once the process is running.
       tags: [Health]
+      security: []
       responses:
         '200':
           description: Process alive.
@@ -551,6 +554,7 @@ paths:
       summary: Readiness probe
       description: Returns 200 only when all background services are healthy.
       tags: [Health]
+      security: []
       responses:
         '200':
           description: All services ready.

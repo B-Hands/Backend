@@ -1,5 +1,4 @@
--- Rollback for 20260529000002_add_auth_nonces
--- Drops the auth nonce table (indexes drop with it).
--- Safe: nonces are short-lived challenge values, not durable state.
+-- rollback.sql — reverse of 20260529000002_add_auth_nonces/migration.sql
+-- Drops the auth_nonces table and all its indexes.
 
-DROP TABLE IF EXISTS "auth_nonces";
+DROP TABLE IF EXISTS "auth_nonces" CASCADE;

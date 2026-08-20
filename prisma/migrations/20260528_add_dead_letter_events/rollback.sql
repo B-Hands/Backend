@@ -1,6 +1,5 @@
--- Rollback for 20260528_add_dead_letter_events
--- Drops the dead-letter queue table and its enum.
--- WARNING: Destroys any queued/failed events awaiting retry.
+-- rollback.sql — reverse of 20260528_add_dead_letter_events/migration.sql
+-- Drops the dead_letter_events table and the DeadLetterEventStatus enum.
 
-DROP TABLE IF EXISTS "dead_letter_events";
+DROP TABLE IF EXISTS "dead_letter_events" CASCADE;
 DROP TYPE IF EXISTS "DeadLetterEventStatus";
