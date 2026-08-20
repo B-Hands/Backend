@@ -1,0 +1,39 @@
+# Pre-deploy migration job — run before rolling out a new image version.
+# Usage:
+#   kubectl apply -f deploy/k8s/migration-job.yaml
+#   kubectl wait --for=condition=complete job/neurowealth-migrate -n neurowealth --timeout=300s
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: neurowealth-migrate
+  namespace: neurowealth
+  labels:
+    app.kubernetes.io/name: neurowealth-backend
+    app.kubernetes.io/component: migration
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: neurowealth-backend
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: migrate
+          image: neurowealth-backend:latest
+          imagePullPolicy: IfNotPresent
+          command: ["npx", "prisma", "migrate", "deploy"]
+          envFrom:
+            - secretRef:
+                name: neurowealth-secrets
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi

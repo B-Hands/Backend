@@ -1,6 +1,7 @@
 import winston from 'winston'
 import * as fs from 'fs'
 import * as path from 'path'
+import { getCorrelationId } from './correlation'
 
 // Ensure logs directory exists with fail-safe handling
 const logsDir = path.join(process.cwd(), 'logs')
@@ -10,7 +11,10 @@ try {
   }
 } catch (error) {
   // If we can't create logs directory, fall back to console-only logging
-  console.error('[Logger] Failed to create logs directory, using console-only:', error)
+  console.error(
+    '[Logger] Failed to create logs directory, using console-only:',
+    error
+  )
 }
 
 // Sensitive data patterns to redact
@@ -38,19 +42,34 @@ function redactSensitiveData(message: string): string {
   return redacted
 }
 
-// Custom format that redacts sensitive data
-const redactFormat = winston.format.printf(({ timestamp, level, message, ...meta }) => {
-  const safeMessage = typeof message === 'string' ? redactSensitiveData(message) : message
-  const safeMeta: any = {}
-  for (const [key, value] of Object.entries(meta)) {
-    safeMeta[key] = typeof value === 'string' ? redactSensitiveData(value) : value
+// Inject correlation ID from AsyncLocalStorage when present
+const correlationFormat = winston.format((info) => {
+  const correlationId = getCorrelationId()
+  if (correlationId && !info.correlationId) {
+    info.correlationId = correlationId
   }
-  const metaStr = Object.keys(safeMeta).length ? JSON.stringify(safeMeta) : ''
-  return `${timestamp} [${level}]: ${safeMessage} ${metaStr}`
+  return info
 })
 
+// Custom format that redacts sensitive data
+const redactFormat = winston.format.printf(
+  ({ timestamp, level, message, ...meta }) => {
+    const safeMessage =
+      typeof message === 'string' ? redactSensitiveData(message) : message
+    const safeMeta: any = {}
+    for (const [key, value] of Object.entries(meta)) {
+      safeMeta[key] =
+        typeof value === 'string' ? redactSensitiveData(value) : value
+    }
+    const metaStr = Object.keys(safeMeta).length ? JSON.stringify(safeMeta) : ''
+    return `${timestamp} [${level}]: ${safeMessage} ${metaStr}`
+  }
+)
+
 // Determine log level from environment
-const logLevel = process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'info' : 'debug')
+const logLevel =
+  process.env.LOG_LEVEL ||
+  (process.env.NODE_ENV === 'production' ? 'info' : 'debug')
 const isProduction = process.env.NODE_ENV === 'production'
 
 // Create base transports array
@@ -75,7 +94,10 @@ if (fs.existsSync(logsDir) && fs.statSync(logsDir).isDirectory()) {
         maxsize: 10 * 1024 * 1024, // 10MB
         maxFiles: 5,
         format: isProduction
-          ? winston.format.combine(winston.format.timestamp(), winston.format.json())
+          ? winston.format.combine(
+              winston.format.timestamp(),
+              winston.format.json()
+            )
           : winston.format.combine(winston.format.timestamp(), redactFormat),
       })
     )
@@ -87,7 +109,10 @@ if (fs.existsSync(logsDir) && fs.statSync(logsDir).isDirectory()) {
         maxsize: 10 * 1024 * 1024, // 10MB
         maxFiles: 5,
         format: isProduction
-          ? winston.format.combine(winston.format.timestamp(), winston.format.json())
+          ? winston.format.combine(
+              winston.format.timestamp(),
+              winston.format.json()
+            )
           : winston.format.combine(winston.format.timestamp(), redactFormat),
       })
     )
@@ -98,9 +123,18 @@ if (fs.existsSync(logsDir) && fs.statSync(logsDir).isDirectory()) {
 
 export const logger = winston.createLogger({
   level: logLevel,
-  format: winston.format.combine(winston.format.timestamp(), redactFormat),
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    correlationFormat(),
+    redactFormat
+  ),
   transports,
 })
+
+/** Child logger with a fixed correlationId (e.g. background jobs). */
+export function createCorrelatedLogger(correlationId: string): winston.Logger {
+  return logger.child({ correlationId })
+}
 
 // Optional cloud logging adapters (disabled by default)
 export function addCloudLoggingAdapter(adapter: winston.transport): void {
@@ -109,3 +143,37 @@ export function addCloudLoggingAdapter(adapter: winston.transport): void {
 
 // Export for testing
 export { redactSensitiveData, SENSITIVE_PATTERNS }
+
+/**
+ * Structured logging for background jobs and scheduled tasks.
+ * Emits a single log entry with job name, duration, status, and correlation ID.
+ *
+ * @param jobName - Name of the job (e.g. "session_cleanup", "rebalance_check")
+ * @param status - 'success' or 'failed'
+ * @param durationSeconds - Execution time in seconds
+ * @param correlationId - Optional correlation ID for tracing
+ * @param details - Optional additional context (row count, error message, etc)
+ */
+export function logBackgroundJob(
+  jobName: string,
+  status: 'success' | 'failed',
+  durationSeconds: number,
+  correlationId?: string,
+  details?: Record<string, any>
+): void {
+  const logContext = {
+    jobName,
+    status,
+    durationSeconds: Number(durationSeconds.toFixed(3)),
+    ...(correlationId && { correlationId }),
+    ...details,
+  }
+
+  const message = `[${jobName}] completed in ${durationSeconds.toFixed(3)}s with status ${status}`
+
+  if (status === 'failed') {
+    logger.error(message, logContext)
+  } else {
+    logger.info(message, logContext)
+  }
+}

@@ -1,0 +1,103 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: neurowealth-backend
+  namespace: neurowealth
+  labels:
+    app.kubernetes.io/name: neurowealth-backend
+    app.kubernetes.io/component: api
+spec:
+  # IMPORTANT: The monolith starts an in-process Stellar event listener and
+  # agent cron loop. Multiple replicas will duplicate event processing and
+  # scheduled jobs. Keep replicas at 1 until worker/API split is implemented.
+  # See docs/DEPLOYMENT.md for scaling guidance.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: neurowealth-backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: neurowealth-backend
+        app.kubernetes.io/component: api
+    spec:
+      serviceAccountName: neurowealth-backend
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 1000
+      terminationGracePeriodSeconds: 35
+      initContainers:
+        - name: migrate
+          image: neurowealth-backend:latest
+          imagePullPolicy: IfNotPresent
+          command: ["npx", "prisma", "migrate", "deploy"]
+          envFrom:
+            - secretRef:
+                name: neurowealth-secrets
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+      containers:
+        - name: api
+          image: neurowealth-backend:latest
+          imagePullPolicy: IfNotPresent
+          # Do NOT run migrations in the app container — initContainer handles that.
+          command: ["node", "dist/index.js"]
+          lifecycle:
+            # preStop runs before SIGTERM. The sleep gives kube-proxy / the
+            # ingress time to remove this pod from the Service endpoints so new
+            # traffic stops arriving before the app begins draining in-flight
+            # requests. terminationGracePeriodSeconds (35s) covers this sleep
+            # plus the app's SHUTDOWN_DRAIN_TIMEOUT_MS (30s).
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+          ports:
+            - name: http
+              containerPort: 3001
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: neurowealth-config
+            - secretRef:
+                name: neurowealth-secrets
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - "wget --spider -q --header=\"X-Internal-Token: $INTERNAL_SERVICE_TOKEN\" http://localhost:3001/health/deep"
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL

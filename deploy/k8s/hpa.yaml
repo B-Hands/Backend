@@ -1,0 +1,24 @@
+# Horizontal Pod Autoscaler — disabled by default because the monolith
+# requires a single active consumer for the Stellar event listener and agent cron.
+# Enable only after splitting API and worker deployments (see docs/DEPLOYMENT.md).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: neurowealth-backend
+  namespace: neurowealth
+  labels:
+    app.kubernetes.io/name: neurowealth-backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: neurowealth-backend
+  minReplicas: 1
+  maxReplicas: 1
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

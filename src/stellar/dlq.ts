@@ -15,6 +15,7 @@ import db from '../db'
 import { updateDlqSize } from '../utils/metrics'
 import { config } from '../config'
 import { alertingService, type DLQAlertPayload } from '../services/alerting'
+import { getCorrelationId } from '../utils/correlation'
 
 export type DeadLetterEventStatus = 'PENDING' | 'RETRIED' | 'RESOLVED'
 
@@ -61,6 +62,18 @@ function serializePayload(event: any): any {
       : event?.topics,
     value: serializeScVal(event?.value),
   }
+}
+
+function buildPayload(event: any): any {
+  const correlationId = getCorrelationId() ?? event?.correlationId
+  const serialized = serializePayload(event)
+  if (correlationId) {
+    return {
+      ...serialized,
+      _metadata: { correlationId },
+    }
+  }
+  return serialized
 }
 
 function deserializePayload(event: any): any {
@@ -118,7 +131,7 @@ export class DeadLetterQueue {
         eventType: event?.type ?? 'unknown',
         ledger: typeof event?.ledger === 'number' ? event.ledger : 0,
         error: errorMsg,
-        payload: serializePayload(event),
+        payload: buildPayload(event),
         status: 'PENDING' as const,
         retryCount: 0,
       },

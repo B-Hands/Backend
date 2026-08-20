@@ -1,5 +1,8 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  // "metrics" exposes prisma.$metrics.json() — used to export connection-pool
+  // utilisation to Prometheus (see src/jobs/poolMetrics.ts).
+  previewFeatures = ["metrics"]
 }
 
 datasource db {
@@ -19,6 +22,10 @@ enum TransactionType {
   YIELD_CLAIM
   REBALANCE
   SWAP
+  // Platform-funded referral reward payout. Distinct from user-initiated
+  // activity so it is auditable and, for tax purposes (#284), identifiable as
+  // realized income rather than a return on the user's own capital.
+  REFERRAL_REWARD
 }
 
 enum TransactionStatus {
@@ -41,6 +48,11 @@ enum AgentAction {
   ANALYZE
   ALERT
   CLAIM_YIELD
+  // Progress snapshot for an ACTIVE SavingsGoal (#281) — logged whenever the
+  // goal progress endpoint or strategy engine recomputes trajectory, so a
+  // goal's trend is inspectable via AgentLog the same way rebalance decisions
+  // already are.
+  GOAL_PROGRESS
 }
 
 enum AgentStatus {
@@ -55,17 +67,137 @@ enum DeadLetterEventStatus {
   RESOLVED
 }
 
+// #325 — durable outbox for on-chain money movements.
+enum OutboxOpKind {
+  DEPOSIT
+  WITHDRAW
+  REBALANCE
+  RECURRING_DEPOSIT
+  REFERRAL_REWARD
+  YIELD_CLAIM
+}
+
+enum OutboxOpActor {
+  USER
+  AGENT
+  SYSTEM
+}
+
+// CRITICAL: user withdrawals (capital leaving the platform).
+// NORMAL: recurring deposits / referral rewards.
+// LOW: agent-triggered rebalances.
+enum OutboxPriority {
+  CRITICAL
+  NORMAL
+  LOW
+}
+
+enum OutboxOpStatus {
+  PENDING
+  SUBMITTED
+  CONFIRMED
+  FAILED
+  CANCELLED
+}
+
+enum FiatDirection {
+  ON_RAMP
+  OFF_RAMP
+}
+
+enum FiatOrderStatus {
+  PENDING
+  PROCESSING
+  SETTLED
+  FAILED
+  REFUNDED
+}
+
+enum ReferralStatus {
+  PENDING
+  ACTIVATED
+  REWARDED
+  EXPIRED
+}
+
+enum DepositCadence {
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+}
+
+enum RecurringDepositPlanStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
+// Where an acquisition/disposal USD price came from (#284). Only stablecoins
+// are priced in v1; anything else is stored with a null price and surfaced as
+// unpriced in the tax report — never silently zeroed.
+enum PriceSource {
+  STABLECOIN_ASSUMPTION
+}
+
+enum GoalStatus {
+  ACTIVE
+  ACHIEVED
+  MISSED
+  CANCELLED
+}
+
+// User-defined alert rules (#289). Distinct from the operator-facing
+// Prometheus/Grafana alerting in docs/OBSERVABILITY.md — these watch
+// portfolio/market conditions the end user cares about.
+enum AlertMetric {
+  PROTOCOL_APY
+  PORTFOLIO_VALUE
+  POSITION_DRAWDOWN
+}
+
+enum Comparator {
+  LT
+  LTE
+  GT
+  GTE
+}
+
+enum DeliveryChannel {
+  WEBHOOK
+  WHATSAPP
+  BOTH
+}
+
+enum SubAccountPermission {
+  VIEW
+  DEPOSIT
+  WITHDRAW
+  MANAGE_STRATEGY
+}
+
+enum SubAccountStatus {
+  ACTIVE
+  REVOKED
+}
+
 model User {
-  id            String   @id @default(uuid())
-  walletAddress String   @unique
-  network       Network  @default(MAINNET)
-  displayName   String?
-  email         String?  @unique
-  avatarUrl     String?
-  riskTolerance Int      @default(5)
-  isActive      Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id                String   @id @default(uuid())
+  walletAddress     String   @unique
+  network           Network  @default(MAINNET)
+  displayName       String?
+  email             String?  @unique
+  avatarUrl         String?
+  // E.164 WhatsApp number, when known. Nullable because most users onboard via
+  // wallet auth and never link a number. Used as the WhatsApp delivery
+  // destination for alert rules (#289); alerts on the WHATSAPP/BOTH channel are
+  // skipped (logged, not errored) for users without a number on file.
+  phone             String?  @unique
+  riskTolerance     Int      @default(5)
+  rebalanceStrategy String? // 'MAX_YIELD' | 'TARGET_ALLOCATION' | null (defaults to MAX_YIELD)
+  strategyConfig    Json? // e.g. { "targetAllocations": { "Blend": 50, "Stellar DEX": 30, "Luma": 20 } }
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   sessions     Session[]
   positions    Position[]
@@ -77,15 +209,17 @@ model User {
 }
 
 model Session {
-  id            String   @id @default(uuid())
-  userId        String
-  token         String   @unique
-  walletAddress String
-  network       Network
-  expiresAt     DateTime
-  ipAddress     String?
-  userAgent     String?
-  createdAt     DateTime @default(now())
+  id                    String    @id @default(uuid())
+  userId                String
+  token                 String    @unique
+  walletAddress         String
+  network               Network
+  expiresAt             DateTime
+  refreshTokenHash      String?
+  refreshTokenExpiresAt DateTime?
+  ipAddress             String?
+  userAgent             String?
+  createdAt             DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -93,6 +227,56 @@ model Session {
   @@index([expiresAt])
   @@index([userId, expiresAt])
   @@map("sessions")
+}
+
+model AdminApiKey {
+  id          String    @id @default(uuid())
+  name        String    @unique
+  role        String
+  scopes      String[]
+  hash        String
+  // SHA-256 of the raw token ("sha256:<hex>"). A deterministic lookup key that
+  // narrows candidates before the expensive bcrypt compare against `hash`.
+  // Nullable only so the migration is safe on pre-existing rows; keys without
+  // one cannot be authenticated and must be re-issued.
+  tokenPrefix String?
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  lastUsedAt  DateTime?
+
+  auditLogs AdminAuditLog[]
+
+  @@index([role])
+  @@index([revokedAt])
+  @@index([expiresAt])
+  @@index([tokenPrefix])
+  @@map("admin_api_keys")
+}
+
+model AdminAuditLog {
+  id         String   @id @default(uuid())
+  adminKeyId String?
+  adminName  String?
+  adminRole  String?
+  action     String
+  target     String?
+  result     String
+  details    Json?
+  ipAddress  String?
+  userAgent  String?
+  method     String?
+  path       String?
+  createdAt  DateTime @default(now())
+
+  adminKey AdminApiKey? @relation(fields: [adminKeyId], references: [id], onDelete: SetNull)
+
+  @@index([adminKeyId])
+  @@index([action])
+  @@index([result])
+  @@index([createdAt])
+  @@map("admin_audit_logs")
 }
 
 model Position {
@@ -112,6 +296,7 @@ model Position {
   user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   transactions   Transaction[]
   yieldSnapshots YieldSnapshot[]
+  savingsGoals   SavingsGoal[]
 
   @@index([userId])
   @@index([status])
@@ -123,24 +308,28 @@ model Position {
 }
 
 model Transaction {
-  id           String            @id @default(uuid())
-  userId       String
-  positionId   String?
-  txHash       String?           @unique
-  type         TransactionType
-  status       TransactionStatus @default(PENDING)
-  assetSymbol  String
-  amount       Decimal           @db.Decimal(36, 18)
-  fee          Decimal?          @db.Decimal(36, 18)
-  network      Network
-  protocolName String?
-  memo         String?
-  confirmedAt  DateTime?
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
+  id             String            @id @default(uuid())
+  userId         String
+  actingAsUserId String? // non-null when action was performed by a parent on behalf of a child
+  positionId     String?
+  txHash         String?           @unique
+  type           TransactionType
+  status         TransactionStatus @default(PENDING)
+  assetSymbol    String
+  amount         Decimal           @db.Decimal(36, 18)
+  fee            Decimal?          @db.Decimal(36, 18)
+  network        Network
+  protocolName   String?
+  memo           String?
+  confirmedAt    DateTime?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
 
-  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  position Position? @relation(fields: [positionId], references: [id])
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  position     Position?     @relation(fields: [positionId], references: [id])
+  fiatOrders   FiatOrder[]
+  costBasisLot CostBasisLot?
+  lotDisposals LotDisposal[]
 
   @@index([userId])
   @@index([positionId])
@@ -148,6 +337,7 @@ model Transaction {
   @@index([status])
   @@index([createdAt])
   @@index([userId, createdAt])
+  @@index([actingAsUserId])
   @@map("transactions")
 }
 
@@ -175,6 +365,7 @@ model ProtocolRate {
   borrowApy    Decimal? @db.Decimal(10, 6)
   tvl          Decimal? @db.Decimal(36, 2)
   network      Network
+  rawResponse  String?
   fetchedAt    DateTime @default(now())
 
   @@unique([protocolName, assetSymbol, network, fetchedAt])
@@ -184,18 +375,53 @@ model ProtocolRate {
   @@map("protocol_rates")
 }
 
+// Audit posture of a protocol, mirrored from the AuditStatusValue string union
+// in src/config/protocolRiskMetadata.ts. Values must stay in sync with that
+// union since the scoring job persists it directly.
+enum AuditStatus {
+  UNAUDITED
+  SELF_REPORTED
+  THIRD_PARTY_AUDITED
+}
+
+// ProtocolRiskScore — quantitative, transparent risk score per protocol.
+// Recomputed on a schedule from ProtocolRate history plus curated audit/age
+// metadata (see src/config/protocolRiskMetadata.ts). See
+// docs/PROTOCOL_RISK_SCORING.md for the scoring methodology.
+model ProtocolRiskScore {
+  id                  String      @id @default(uuid())
+  protocolName        String      @unique
+  score               Int // normalized 0-100, higher = lower risk
+  tvlTrendFactor      Float
+  apyVolatilityFactor Float
+  auditStatus         AuditStatus
+  protocolAgeDays     Int
+  // True when there is not enough rate history to compute volatility/trend
+  // meaningfully. Such protocols score conservatively low and are flagged
+  // rather than presented with a misleadingly neutral score.
+  insufficientHistory Boolean     @default(false)
+  // Number of ProtocolRate samples the factors were computed from — surfaced
+  // in the transparency endpoint so users can judge confidence in the score.
+  sampleCount         Int         @default(0)
+  computedAt          DateTime    @default(now())
+
+  @@index([score])
+  @@map("protocol_risk_scores")
+}
+
 model AgentLog {
-  id           String      @id @default(uuid())
-  userId       String?     // null for system-level actions (scans, alerts)
-  positionId   String?     // set when log is tied to a specific position
-  action       AgentAction
-  status       AgentStatus
-  reasoning    String?     @db.Text
-  inputData    Json?
-  outputData   Json?
-  errorMessage String?
-  durationMs   Int?
-  createdAt    DateTime    @default(now())
+  id             String      @id @default(uuid())
+  userId         String? // null for system-level actions (scans, alerts)
+  actingAsUserId String? // non-null when action was performed by a parent on behalf of a child
+  positionId     String? // set when log is tied to a specific position
+  action         AgentAction
+  status         AgentStatus
+  reasoning      String?     @db.Text
+  inputData      Json?
+  outputData     Json?
+  errorMessage   String?
+  durationMs     Int?
+  createdAt      DateTime    @default(now())
 
   user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -206,26 +432,27 @@ model AgentLog {
   @@index([userId, status])
   @@index([createdAt])
   @@index([userId, createdAt])
+  @@index([actingAsUserId])
   @@map("agent_logs")
 }
 
 model EventCursor {
-  id                   String   @id @default(uuid())
-  contractId           String   @unique
-  lastProcessedLedger  Int
-  lastProcessedAt      DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  id                  String   @id @default(uuid())
+  contractId          String   @unique
+  lastProcessedLedger Int
+  lastProcessedAt     DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   @@map("event_cursors")
 }
 
 model ProcessedEvent {
-  id           String   @id @default(uuid())
-  contractId   String
-  txHash       String
-  eventType    String
-  ledger       Int
-  processedAt  DateTime @default(now())
+  id          String   @id @default(uuid())
+  contractId  String
+  txHash      String
+  eventType   String
+  ledger      Int
+  processedAt DateTime @default(now())
 
   @@unique([contractId, txHash, eventType, ledger])
   @@index([contractId])
@@ -236,23 +463,74 @@ model ProcessedEvent {
 }
 
 model DeadLetterEvent {
-  id          String                @id @default(uuid())
-  contractId  String
-  txHash      String
-  eventType   String
-  ledger      Int
-  error       String                @db.Text
-  payload     Json
-  status      DeadLetterEventStatus @default(PENDING)
-  retryCount  Int                   @default(0)
-  createdAt   DateTime              @default(now())
-  updatedAt   DateTime              @updatedAt
+  id         String                @id @default(uuid())
+  contractId String
+  txHash     String
+  eventType  String
+  ledger     Int
+  error      String                @db.Text
+  payload    Json
+  status     DeadLetterEventStatus @default(PENDING)
+  retryCount Int                   @default(0)
+  createdAt  DateTime              @default(now())
+  updatedAt  DateTime              @updatedAt
 
   @@index([status])
   @@index([contractId])
   @@index([txHash])
   @@index([createdAt])
   @@map("dead_letter_events")
+}
+
+// Durable outbox + prioritized dispatcher for on-chain money movements (#325).
+// This is the single choke point every write to the vault contract must pass
+// through — src/outbox/executors.ts is the only module besides
+// src/stellar/contract.ts itself allowed to call the raw write functions
+// (enforced by tests/unit/outbox/structural.test.ts).
+model OutboxOp {
+  id String @id @default(uuid())
+
+  // Deterministic per-caller anchor (e.g. "DEPOSIT:<userId>:<transactionId>").
+  // Guarantees at-most-once submission across dispatcher crashes/restarts —
+  // see src/outbox/idempotency.ts.
+  idempotencyKey String @unique
+
+  userId String
+  kind   OutboxOpKind
+  actor  OutboxOpActor
+
+  // The exact, validated operation: { method, params, asset, amount,
+  // destination, ... } — never a key, never unvalidated user input.
+  payload Json
+
+  priority OutboxPriority
+  status   OutboxOpStatus @default(PENDING)
+
+  // Set once the dispatcher successfully submits to the network.
+  txHash String? @unique
+
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime?
+  error         String?   @db.Text
+
+  submittedAt DateTime?
+  confirmedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Which signer (Stellar public key) this op executes under. The dispatcher
+  // serializes ops sharing a signer so sequence-number ordering on that
+  // account is never raced (see src/outbox/signerLock.ts). Populated at
+  // claim time, once the signer is known.
+  signerPublicKey String?
+
+  @@index([status, priority, createdAt])
+  @@index([userId])
+  @@index([kind])
+  @@index([signerPublicKey, status])
+  @@index([status, nextAttemptAt])
+  @@map("outbox_ops")
 }
 
 model CustodialWallet {
@@ -262,11 +540,50 @@ model CustodialWallet {
   encryptedSecret String
   iv              String
   authTag         String
+  keyVersion      Int      @default(1)
+  // Which WalletEncryptionKey encrypted this row, set at write time. Null on
+  // rows written before provenance tracking existed (#323) — such rows are
+  // read via the legacy dual-key fallback in src/stellar/wallet.ts until a
+  // backfill (scripts/backfill-wallet-key-provenance.ts) or a rotation writes
+  // a value here. Deliberately not a required FK for that reason.
+  encryptionKeyId String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
+  encryptionKey WalletEncryptionKey? @relation(fields: [encryptionKeyId], references: [id])
+
   @@index([userId])
+  @@index([keyVersion])
+  @@index([encryptionKeyId])
   @@map("custodial_wallets")
+}
+
+enum KeyStatus {
+  ACTIVE
+  RETIRED
+  COMPROMISED
+}
+
+/// Registry of wallet-encryption key *metadata* (#323) — never the key
+/// material itself. `hash` is SHA-256 over the hex key, letting a
+/// CustodialWallet row's `encryptionKeyId` prove which key encrypted it
+/// without the registry ever holding anything an attacker could decrypt
+/// with. See src/keys/registry.ts.
+model WalletEncryptionKey {
+  id             String    @id @default(uuid())
+  keyLabel       String    @unique
+  hash           String    @unique
+  status         KeyStatus @default(ACTIVE)
+  rotatedFromId  String?
+  createdAt      DateTime  @default(now())
+  retiredAt      DateTime?
+
+  rotatedFrom WalletEncryptionKey?  @relation("KeyRotation", fields: [rotatedFromId], references: [id])
+  rotatedTo   WalletEncryptionKey[] @relation("KeyRotation")
+  wallets     CustodialWallet[]
+
+  @@index([status])
+  @@map("wallet_encryption_keys")
 }
 
 model AuthNonce {

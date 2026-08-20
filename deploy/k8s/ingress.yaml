@@ -1,0 +1,31 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: neurowealth-backend
+  namespace: neurowealth
+  labels:
+    app.kubernetes.io/name: neurowealth-backend
+  annotations:
+    # TLS — adjust for your ingress controller (nginx, ALB, etc.)
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100k"
+    # Optional WAF — enable when your provider supports it
+    # nginx.ingress.kubernetes.io/enable-modsecurity: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.neurowealth.io
+      secretName: neurowealth-api-tls
+  rules:
+    - host: api.neurowealth.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: neurowealth-backend
+                port:
+                  number: 3001
