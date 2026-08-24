@@ -56,6 +56,7 @@ import { scheduleAttribution } from './jobs/attribution'
 import { scheduleOutboxDispatcher } from './outbox/dispatcher'
 import { scheduleProtocolRiskScoring } from './jobs/protocolRiskScoring'
 import { schedulePortfolioRiskJob } from './jobs/portfolioRisk'
+import { scheduleApprovalExpiry } from './jobs/approvalExpiry'
 import { startEventListener, stopEventListener } from './stellar/events'
 import { validateStellarNetworkReady } from './config/readiness'
 import healthRouter from './routes/health'
@@ -80,6 +81,8 @@ import recurringDepositRouter from './routes/recurring-deposits'
 import alertsRouter from './routes/alerts'
 import strategiesRouter from './routes/strategies'
 import subAccountsRouter from './routes/sub-accounts'
+import approvalsRouter from './routes/approvals'
+import approvalPoliciesRouter from './routes/approval-policies'
 import {
   corsMiddleware,
   jsonBodyParser,
@@ -117,6 +120,7 @@ let protocolRiskScoringHandle: NodeJS.Timeout | null = null
 let attributionHandle: NodeJS.Timeout | null = null
 let outboxDispatcherHandle: NodeJS.Timeout | null = null
 let portfolioRiskJobHandle: NodeJS.Timeout | null = null
+let approvalExpiryHandle: NodeJS.Timeout | null = null
 
 function allServicesReady(): boolean {
   return Object.values(serviceStatus).every((s) => s.ready)
@@ -298,6 +302,8 @@ const apiRoutes: ApiRoute[] = [
   { path: 'alerts', handlers: [alertsRouter] },
   { path: 'strategies', handlers: [strategiesRouter] },
   { path: 'sub-accounts', handlers: [subAccountsRouter] },
+  { path: 'approvals', handlers: [approvalsRouter] },
+  { path: 'approval-policies', handlers: [approvalPoliciesRouter] },
   { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
 ]
 
@@ -407,6 +413,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
     clearInterval(portfolioRiskJobHandle)
     portfolioRiskJobHandle = null
     logger.info('[Shutdown] Portfolio risk job timer cleared')
+  }
+
+  if (approvalExpiryHandle) {
+    clearInterval(approvalExpiryHandle)
+    approvalExpiryHandle = null
+    logger.info('[Shutdown] Approval expiry sweep timer cleared')
   }
 
   if (!httpServer) {
@@ -573,6 +585,7 @@ async function main(): Promise<void> {
   allocationSuggestionsHandle = scheduleAllocationSuggestions()
   attributionHandle = scheduleAttribution()
   portfolioRiskJobHandle = schedulePortfolioRiskJob()
+  approvalExpiryHandle = scheduleApprovalExpiry()
 }
 
 // ── Process-level error guards ────────────────────────────────────────────────
