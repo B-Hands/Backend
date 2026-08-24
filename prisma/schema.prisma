@@ -153,6 +153,9 @@ enum AlertMetric {
   PROTOCOL_APY
   PORTFOLIO_VALUE
   POSITION_DRAWDOWN
+  DRIFT
+  VOLATILITY_REGIME
+  ANOMALY
 }
 
 enum Comparator {

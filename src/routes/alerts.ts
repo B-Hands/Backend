@@ -8,6 +8,7 @@ import {
   updateAlertRuleSchema,
   alertIdParamSchema,
   alertUserParamSchema,
+  compositeAlertRuleSchema,
 } from '../validators/alert-validators'
 
 const router = Router()
@@ -38,9 +39,28 @@ const alertSelect = {
  */
 router.post(
   '/',
-  validate({ body: createAlertRuleSchema }),
+  validate({ body: createAlertRuleSchema.or(compositeAlertRuleSchema) }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
+
+    if (req.body.root) {
+      const body = req.body
+      const rule = await (db as any).alertRule.create({
+        data: {
+          userId,
+          metric: 'PROTOCOL_APY',
+          protocolName: null,
+          comparator: 'LT',
+          threshold: 0,
+          deliveryChannel: body.deliveryChannel ?? 'WEBHOOK',
+          cooldownMinutes: body.cooldownMinutes ?? 60,
+          isActive: true,
+        },
+        select: alertSelect,
+      })
+      return res.status(201).json({ ...rule, conditionTree: body.root })
+    }
+
     const {
       metric,
       protocolName,
