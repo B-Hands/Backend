@@ -16,6 +16,8 @@ import { logger } from '../utils/logger'
 import { requireAdminAuth, requireAdminScope } from '../middleware/adminAuth'
 import { getAllProviderHealth, adminSetProviderCircuit } from '../fiat/registry'
 import db from '../db'
+import { alertingService } from '../services/alerting'
+import { verifyAuditChain } from '../audit/chain'
 
 const router = Router()
 const prisma = db as any
@@ -73,6 +75,117 @@ function auditLog(
 
 // ── Auth applied once here — rate limiting is applied in app.ts ───────────
 router.use(requireAdminAuth)
+
+router.get(
+  '/audit/verify',
+  requireAdminScope('super'),
+  async (req: Request, res: Response) => {
+    try {
+      const blocks = await prisma.auditBlock.findMany({
+        orderBy: { height: 'asc' },
+      })
+
+      const proof = verifyAuditChain(
+        blocks.map((block: any) => ({
+          ...block,
+          createdAt: block.createdAt.toISOString(),
+        }))
+      )
+
+      res.setHeader('Content-Type', 'application/json; charset=utf-8')
+      res.setHeader('Transfer-Encoding', 'chunked')
+      res.status(200)
+      res.write(
+        JSON.stringify({
+          valid: proof.valid,
+          height: proof.height,
+          blocksChecked: proof.blocksChecked,
+          firstInvalidBlock: proof.firstInvalidBlock ?? null,
+        })
+      )
+      res.end()
+
+      if (!proof.valid) {
+        await alertingService.emit(
+          {
+            title: 'Audit chain drift detected',
+            description: `Audit verification failed at height ${proof.height}.`,
+            severity: 'critical',
+            component: 'audit-chain',
+            metadata: {
+              firstInvalidBlock: proof.firstInvalidBlock ?? null,
+              blocksChecked: proof.blocksChecked,
+            },
+          },
+          'audit:chain-integrity'
+        )
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      logger.error('[Admin] Audit verification failed', { error: message })
+      await alertingService.emit(
+        {
+          title: 'Audit verification failed',
+          description: `Could not verify the audit chain: ${message}`,
+          severity: 'critical',
+          component: 'audit-chain',
+          metadata: { error: message },
+        },
+        'audit:chain-integrity'
+      )
+      res
+        .status(500)
+        .json({ success: false, error: 'Audit verification failed' })
+    }
+  }
+)
+
+router.get(
+  '/audit/prove',
+  requireAdminScope('super'),
+  async (req: Request, res: Response) => {
+    try {
+      const from = Number(req.query.from ?? 0)
+      const to = Number(req.query.to ?? Number.MAX_SAFE_INTEGER)
+
+      const blocks = await prisma.auditBlock.findMany({
+        where: {
+          height: {
+            gte: Number.isFinite(from) ? from : 0,
+            lte: Number.isFinite(to) ? to : Number.MAX_SAFE_INTEGER,
+          },
+        },
+        orderBy: { height: 'asc' },
+        select: {
+          height: true,
+          prevHash: true,
+          hash: true,
+          blockType: true,
+          payloadHash: true,
+          payloadCount: true,
+          createdAt: true,
+        },
+      })
+
+      res.status(200).json({
+        success: true,
+        data: {
+          from: Number.isFinite(from) ? from : 0,
+          to: Number.isFinite(to) ? to : Number.MAX_SAFE_INTEGER,
+          blocks: blocks.map((block: any) => ({
+            ...block,
+            createdAt: block.createdAt.toISOString(),
+          })),
+        },
+        timestamp: new Date().toISOString(),
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      logger.error('[Admin] Audit proof failed', { error: message })
+      res.status(500).json({ success: false, error: 'Audit proof failed' })
+    }
+  }
+)
 
 /**
  * GET /api/admin/stellar/metrics

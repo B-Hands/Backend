@@ -7,11 +7,52 @@ import {
 import { config } from '../config/env'
 import { recordBackgroundJob, recordRetentionDeletes } from '../utils/metrics'
 import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
+import {
+  appendAuditBlock,
+  aggregatePayloadHash,
+  GENESIS_AUDIT_HASH,
+} from '../audit/chain'
 
 function cutoffDate(retentionDays: number): Date {
   const d = new Date()
   d.setDate(d.getDate() - retentionDays)
   return d
+}
+
+async function anchorBeforeDelete(
+  modelName: string,
+  rows: Array<Record<string, unknown>>
+): Promise<string | null> {
+  if (rows.length === 0) return null
+
+  const payloadHash = aggregatePayloadHash(rows)
+  const latest = await db.auditBlock.findFirst({
+    orderBy: { height: 'desc' },
+    select: { hash: true, height: true },
+  })
+
+  const block = appendAuditBlock({
+    height: (latest?.height ?? 0) + 1,
+    prevHash: latest?.hash ?? GENESIS_AUDIT_HASH,
+    payloadHash,
+    blockType: 'ANCHOR',
+    createdAt: new Date(),
+    payloads: rows.map((row) => ({ modelName, row })),
+  })
+
+  await db.auditBlock.create({
+    data: {
+      height: block.height,
+      prevHash: block.prevHash,
+      hash: block.hash,
+      blockType: block.blockType,
+      payloadCount: block.payloadCount,
+      payloadHash: block.payloadHash,
+      createdAt: block.createdAt,
+    },
+  })
+
+  return block.hash
 }
 
 /**
@@ -66,6 +107,20 @@ export async function cleanupProcessedEvents(): Promise<void> {
 
     try {
       const cutoff = cutoffDate(config.retention.processedEventsDays)
+      const rows = await db.processedEvent.findMany({
+        where: { processedAt: { lt: cutoff } },
+        select: {
+          id: true,
+          contractId: true,
+          txHash: true,
+          eventType: true,
+          ledger: true,
+          processedAt: true,
+        },
+      })
+      if (rows.length > 0) {
+        await anchorBeforeDelete('processed_event', rows)
+      }
       const result = await db.processedEvent.deleteMany({
         where: { processedAt: { lt: cutoff } },
       })
@@ -160,6 +215,20 @@ export async function cleanupAgentLogs(): Promise<void> {
 
     try {
       const cutoff = cutoffDate(config.retention.agentLogsDays)
+      const rows = await db.agentLog.findMany({
+        where: { createdAt: { lt: cutoff } },
+        select: {
+          id: true,
+          action: true,
+          status: true,
+          createdAt: true,
+          userId: true,
+          positionId: true,
+        },
+      })
+      if (rows.length > 0) {
+        await anchorBeforeDelete('agent_log', rows)
+      }
       const result = await db.agentLog.deleteMany({
         where: { createdAt: { lt: cutoff } },
       })

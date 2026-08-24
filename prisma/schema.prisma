@@ -295,6 +295,41 @@ model AdminAuditLog {
   @@map("admin_audit_logs")
 }
 
+enum AuditBlockType {
+  EVENT_BATCH
+  TXN_BATCH
+  ADMIN_BATCH
+  ANCHOR
+}
+
+model AuditBlock {
+  id           String        @id @default(uuid())
+  height       Int           @unique
+  prevHash     String
+  hash         String        @unique
+  blockType    AuditBlockType
+  payloadCount Int           @default(0)
+  payloadHash  String
+  createdAt    DateTime      @default(now())
+
+  @@index([blockType])
+  @@index([createdAt])
+  @@map("audit_blocks")
+}
+
+model AuditPayloadHash {
+  id         String   @id @default(uuid())
+  tableName  String
+  kind       String
+  payloadHash String
+  createdAt  DateTime @default(now())
+
+  @@index([tableName])
+  @@index([kind])
+  @@index([payloadHash])
+  @@map("audit_payload_hashes")
+}
+
 model Position {
   id              String         @id @default(uuid())
   userId          String
