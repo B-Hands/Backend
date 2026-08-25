@@ -14,7 +14,8 @@ import {
   getThresholds,
   logAgentAction,
 } from './router'
-import { dispatchWebhookEvent } from '../services/webhookDispatcher'
+import { publishUserEvent } from '../events/publisher'
+import { EVENT_TYPE_TOPIC } from '../events/types'
 import { captureAllUserBalances, cleanupOldSnapshots } from './snapshotter'
 import { resolveEffectiveConfig } from './effectiveStrategy'
 import {
@@ -236,14 +237,44 @@ async function rebalanceCheckJob(): Promise<void> {
           currentProtocol = result.toProtocol
           currentApy = result.improvedBy
           recordRebalanceTriggered()
-          dispatchWebhookEvent('agent.rebalanced', {
+
+          // #316: every user with a position in this batch had their money
+          // moved, so each gets the event on their own stream. The operator
+          // webhook still fires exactly once — webhook subscriptions are
+          // operator-scoped, not per-user, so fanning it out would duplicate it.
+          const affectedUserIds = Array.from(
+            new Set(protocolPositions.map((p: PositionWithUser) => p.userId))
+          )
+          const rebalancePayload = {
             fromProtocol: result.fromProtocol,
             toProtocol: result.toProtocol,
             amount: result.amount,
             improvedBy: result.improvedBy,
             txHash: result.txHash,
             timestamp: result.timestamp,
-          }).catch(() => {})
+          }
+
+          publishUserEvent(
+            affectedUserIds,
+            EVENT_TYPE_TOPIC['agent.rebalanced'],
+            'agent.rebalanced',
+            rebalancePayload
+          ).catch(() => {})
+
+          // Companion socket-only signal: a dashboard watching `portfolio`
+          // should refresh without also subscribing to agent internals. No
+          // webhook counterpart — an operator endpoint already got the
+          // rebalance above, and a second near-identical POST helps nobody.
+          publishUserEvent(
+            affectedUserIds,
+            EVENT_TYPE_TOPIC['portfolio.updated'],
+            'portfolio.updated',
+            {
+              protocolName: result.toProtocol,
+              positionsAffected: protocolPositions.length,
+              reason: 'rebalance',
+            }
+          ).catch(() => {})
         }
       }
 

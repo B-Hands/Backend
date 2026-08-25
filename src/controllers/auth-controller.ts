@@ -9,6 +9,7 @@ import { logger } from '../utils/logger'
 import db from '../db'
 import { stellarVerification } from '../utils/stellar/stellar-verification'
 import { attributeSignup } from '../referral/service'
+import { closeUserSockets } from '../ws/server'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -278,6 +279,15 @@ export async function logout(req: Request, res: Response): Promise<void> {
   try {
     // Delete the session matched by access token (also nukes its refresh token hash)
     await db.session.deleteMany({ where: { token } })
+
+    // #316: a revoked session must kill the user's live sockets, not just block
+    // the next handshake. The per-connection recheck would catch this within
+    // WS_SESSION_RECHECK_MS anyway; doing it here closes the window now, on the
+    // pod handling the logout. Sockets on other pods still fall to the recheck.
+    if (req.userId) {
+      closeUserSockets(req.userId, 'Session revoked')
+    }
+
     logger.info(`[Auth] Session revoked for user ${req.userId}`)
     res.status(200).json({ message: 'Logged out successfully' })
   } catch (error) {

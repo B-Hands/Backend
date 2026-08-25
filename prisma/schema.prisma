@@ -223,6 +223,8 @@ model User {
   allocationSuggestions   AllocationSuggestion[]
   portfolioAttributions   PortfolioAttribution[]
   portfolioRiskAggregates PortfolioRiskAggregate[]
+  userEvents              UserEvent[]
+  userEventSequence       UserEventSequence?
 
   @@map("users")
 }
@@ -1214,4 +1216,66 @@ model PortfolioRiskAggregate {
   @@index([sortinoRatio])
   @@index([annualisedVolatility])
   @@map("portfolio_risk_aggregates")
+}
+
+/// One durable, sequence-numbered event on a user's real-time stream (#316).
+///
+/// DESIGN NOTE — why Postgres and not a Redis Stream.
+/// Redis is *optional* in this deployment: src/config/redis.ts degrades to a
+/// no-op when REDIS_URL is unset, which is the configuration most environments
+/// (and the whole test suite) actually run. A Redis-backed stream would
+/// therefore make `resume afterSeq` silently unavailable exactly where it is
+/// hardest to notice, and would put durability on a store we already treat as
+/// a cache. Postgres is the source of truth for every other domain event, is
+/// already covered by the retention job, and gives us the gapless per-user
+/// counter below for free. Redis stays in the design as the *transport* for the
+/// cross-pod fan-out (src/events/bridge.ts) — never as the store. Losing Redis
+/// costs live cross-pod delivery for the duration of the outage; it never costs
+/// replay, because replay reads this table.
+///
+/// Bounded two ways by src/jobs/dataRetention.ts: by age
+/// (RETENTION_USER_EVENTS_DAYS) and by per-user row count
+/// (USER_EVENT_STREAM_MAX_PER_USER). A resume older than what survives is
+/// answered with a `gap` frame carrying the newest available seq, never an
+/// unbounded replay.
+model UserEvent {
+  id        String   @id @default(uuid())
+  /// Stream owner. Delivery to a parent sub-account is authorised at publish
+  /// time (see src/events/publisher.ts) — never by rewriting this column.
+  userId    String
+  /// Monotonic, gapless, per-user. Allocated by the atomic upsert-increment on
+  /// UserEventSequence inside the same transaction as this row's INSERT.
+  seq       BigInt
+  /// One of src/events/types.ts USER_EVENT_TOPICS.
+  topic     String
+  /// Domain event type, e.g. 'deposit.received'. Mirrors the webhook event
+  /// name when one exists so both channels speak the same vocabulary.
+  type      String
+  /// Already redacted through the per-type allowlist in
+  /// src/utils/api-formatters.ts before it is stored — the socket must never
+  /// be the reason a field reaches a client, so the store holds only what a
+  /// client is allowed to see.
+  payload   Json
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, seq])
+  @@index([userId, seq])
+  @@index([createdAt])
+  @@map("user_events")
+}
+
+/// Per-user monotonic counter backing UserEvent.seq (#316).
+/// Incremented with a single `INSERT … ON CONFLICT DO UPDATE … RETURNING`, so
+/// concurrent publishers for the same user serialise on the row lock and can
+/// never mint a duplicate or leave a hole.
+model UserEventSequence {
+  userId    String   @id
+  lastSeq   BigInt   @default(0)
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_event_sequences")
 }

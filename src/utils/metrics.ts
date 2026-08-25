@@ -643,6 +643,119 @@ export function updateOutboxStuckSubmitted(count: number): void {
   outboxStuckSubmitted.set(count)
 }
 
+// ── Real-time WebSocket streaming metrics (#316) ─────────────────────────────
+
+export const wsConnectionsActive = new client.Gauge({
+  name: 'ws_connections_active',
+  help: 'Currently open authenticated WebSocket connections',
+  labelNames: ['mode'] as const, // mode: self|delegated
+  registers: [register],
+})
+
+export const wsHandshakesTotal = new client.Counter({
+  name: 'ws_handshakes_total',
+  help: 'WebSocket handshake attempts by outcome',
+  labelNames: ['outcome'] as const, // outcome: accepted|unauthorized|forbidden|rate_limited|too_many
+  registers: [register],
+})
+
+export const wsMessagesSentTotal = new client.Counter({
+  name: 'ws_messages_sent_total',
+  help: 'Frames pushed to clients, by topic and delivery path',
+  labelNames: ['topic', 'path'] as const, // path: live|replay
+  registers: [register],
+})
+
+export const wsMessagesReceivedTotal = new client.Counter({
+  name: 'ws_messages_received_total',
+  help: 'Client messages received, by message type',
+  labelNames: ['type'] as const,
+  registers: [register],
+})
+
+export const wsReplayEventsTotal = new client.Counter({
+  name: 'ws_replay_events_total',
+  help: 'Events replayed from the durable stream on resume',
+  registers: [register],
+})
+
+export const wsGapsTotal = new client.Counter({
+  name: 'ws_gaps_total',
+  help: 'Gap frames emitted, by reason (retention|backpressure|unknown_stream)',
+  labelNames: ['reason'] as const,
+  registers: [register],
+})
+
+export const wsDroppedEventsTotal = new client.Counter({
+  name: 'ws_dropped_events_total',
+  help: 'Events dropped rather than delivered, by reason (backpressure|coalesced)',
+  labelNames: ['reason'] as const,
+  registers: [register],
+})
+
+export const wsBridgePublishTotal = new client.Counter({
+  name: 'ws_bridge_publish_total',
+  help: 'Cross-pod event publishes, by transport outcome',
+  labelNames: ['outcome'] as const, // outcome: redis|local_only|error
+  registers: [register],
+})
+
+export const wsPublishFailuresTotal = new client.Counter({
+  name: 'ws_publish_failures_total',
+  help: 'publishUserEvent calls that failed to persist to the durable stream',
+  registers: [register],
+})
+
+export function setWsConnectionsActive(
+  mode: 'self' | 'delegated',
+  count: number
+): void {
+  wsConnectionsActive.set({ mode }, count)
+}
+
+export function recordWsHandshake(
+  outcome:
+    'accepted' | 'unauthorized' | 'forbidden' | 'rate_limited' | 'too_many'
+): void {
+  wsHandshakesTotal.inc({ outcome })
+}
+
+export function recordWsMessageSent(
+  topic: string,
+  path: 'live' | 'replay'
+): void {
+  wsMessagesSentTotal.inc({ topic, path })
+}
+
+export function recordWsMessageReceived(type: string): void {
+  wsMessagesReceivedTotal.inc({ type })
+}
+
+export function recordWsReplay(count: number): void {
+  if (count > 0) wsReplayEventsTotal.inc(count)
+}
+
+export function recordWsGap(reason: string): void {
+  wsGapsTotal.inc({ reason })
+}
+
+export function recordWsDroppedEvents(
+  reason: 'backpressure' | 'coalesced',
+  count = 1
+): void {
+  wsDroppedEventsTotal.inc({ reason }, count)
+}
+
+export function recordWsBridgePublish(
+  outcome: 'redis' | 'local_only' | 'error'
+): void {
+  wsBridgePublishTotal.inc({ outcome })
+}
+
+export function recordWsPublishFailure(): void {
+  wsPublishFailuresTotal.inc()
+}
+
 /**
  * Get metrics for Prometheus scraping
  */

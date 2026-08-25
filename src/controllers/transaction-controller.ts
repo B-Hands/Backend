@@ -4,7 +4,8 @@ import db from '../db'
 import { formatDepositReply, formatWithdrawReply } from '../whatsapp/formatters'
 import { sendNotFound, sendUnauthorized } from '../utils/errors'
 import { logger } from '../utils/logger'
-import { dispatchWebhookEvent } from '../services/webhookDispatcher'
+import { publishUserEvent } from '../events/publisher'
+import { EVENT_TYPE_TOPIC } from '../events/types'
 import { enqueueOutboxOp } from '../outbox/service'
 import { dispatchOne } from '../outbox/dispatcher'
 import { deriveIdempotencyKey } from '../outbox/idempotency'
@@ -158,14 +159,19 @@ export async function executeDeposit(
   })
 
   if (transaction.status === 'CONFIRMED') {
-    dispatchWebhookEvent('transaction.confirmed', {
-      txHash: transaction.txHash,
-      type: 'DEPOSIT',
-      status: transaction.status,
-      assetSymbol,
-      amount,
+    publishUserEvent(
       userId,
-    }).catch(() => {})
+      EVENT_TYPE_TOPIC['transaction.confirmed'],
+      'transaction.confirmed',
+      {
+        txHash: transaction.txHash,
+        type: 'DEPOSIT',
+        status: transaction.status,
+        assetSymbol,
+        amount,
+        userId,
+      }
+    ).catch(() => {})
   }
 
   return {
@@ -233,15 +239,20 @@ export async function processOnChainTransaction(
     })
 
     if (transaction.status === 'CONFIRMED') {
-      dispatchWebhookEvent('transaction.confirmed', {
-        txHash: transaction.txHash,
-        type,
-        status: transaction.status,
-        assetSymbol,
-        amount,
-        protocolName,
+      publishUserEvent(
         userId,
-      }).catch(() => {})
+        EVENT_TYPE_TOPIC['transaction.confirmed'],
+        'transaction.confirmed',
+        {
+          txHash: transaction.txHash,
+          type,
+          status: transaction.status,
+          assetSymbol,
+          amount,
+          protocolName,
+          userId,
+        }
+      ).catch(() => {})
     }
 
     return res.status(201).json({

@@ -24,7 +24,8 @@
 import { Prisma } from '@prisma/client'
 import db from '../db'
 import { logger } from '../utils/logger'
-import { dispatchWebhookEvent } from '../services/webhookDispatcher'
+import { publishUserEvent } from '../events/publisher'
+import { EVENT_TYPE_TOPIC } from '../events/types'
 import { sendWhatsAppMessage } from '../utils/twilio-client'
 import {
   formatStrategyUpdatedReply,
@@ -529,7 +530,7 @@ export async function loadActiveFollowsForUsers(
  * Runs OUTSIDE the transaction that changed the strategy and never rethrows:
  * a Twilio outage or a dead webhook endpoint must not roll back a publish or
  * leave a follower's snapshot half-written. Same fire-and-forget convention as
- * dispatchWebhookEvent(...).catch(() => {}) in agent/loop.ts.
+ * publishUserEvent(...).catch(() => {}) in agent/loop.ts.
  *
  * A follower with no phone on file is warned and skipped, never thrown —
  * matching src/jobs/alertRules.ts.
@@ -558,8 +559,16 @@ async function notifyFollowers(
             : {}),
         }
 
-        await dispatchWebhookEvent(event, data).catch((error) => {
-          logger.warn('[Strategy] Webhook dispatch failed', {
+        // #316: one call reaches this follower's live socket AND the operator
+        // webhook channel. Still anonymised — the payload names the strategy
+        // and the follower, never the publisher.
+        await publishUserEvent(
+          follower.followerUserId,
+          EVENT_TYPE_TOPIC[event],
+          event,
+          data
+        ).catch((error) => {
+          logger.warn('[Strategy] Event publish failed', {
             event,
             strategyId,
             error: error instanceof Error ? error.message : 'Unknown error',
