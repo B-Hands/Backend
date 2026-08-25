@@ -39,7 +39,8 @@
  */
 import db from '../db'
 import { logger } from '../utils/logger'
-import { dispatchWebhookEvent } from '../services/webhookDispatcher'
+import { publishUserEvent } from '../events/publisher'
+import { EVENT_TYPE_TOPIC } from '../events/types'
 import { alertingService } from '../services/alerting'
 import {
   getDefaultProvider,
@@ -550,14 +551,19 @@ export async function processProviderWebhook(
   // Emit outbound webhook for terminal failure/refund so subscribers react.
   if (updated.status === 'FAILED' || updated.status === 'REFUNDED') {
     recordFiatOrder(providerName, updated.status)
-    dispatchWebhookEvent('fiat.order.failed', {
-      orderId: updated.id,
-      provider: providerName,
-      direction: updated.direction,
-      status: updated.status,
-      failureReason: updated.failureReason,
-      userId: updated.userId,
-    }).catch(() => {})
+    publishUserEvent(
+      updated.userId,
+      EVENT_TYPE_TOPIC['fiat.order.failed'],
+      'fiat.order.failed',
+      {
+        orderId: updated.id,
+        provider: providerName,
+        direction: updated.direction,
+        status: updated.status,
+        failureReason: updated.failureReason,
+        userId: updated.userId,
+      }
+    ).catch(() => {})
   }
 
   // If the provider handed us a tx hash, try an immediate reconciliation pass
@@ -652,14 +658,19 @@ export async function reconcileSingleOrder(
 
   recordFiatOrder(order.provider, 'SETTLED')
 
-  dispatchWebhookEvent('fiat.order.settled', {
-    orderId: settled.id,
-    provider: settled.provider,
-    direction: settled.direction,
-    status: 'SETTLED',
-    txHash,
-    userId: settled.userId,
-  }).catch(() => {})
+  publishUserEvent(
+    settled.userId,
+    EVENT_TYPE_TOPIC['fiat.order.settled'],
+    'fiat.order.settled',
+    {
+      orderId: settled.id,
+      provider: settled.provider,
+      direction: settled.direction,
+      status: 'SETTLED',
+      txHash,
+      userId: settled.userId,
+    }
+  ).catch(() => {})
 
   if (driftPct !== null) {
     recordFiatRateDrift(order.provider, order.direction, Math.abs(driftPct))
@@ -689,15 +700,20 @@ export async function reconcileSingleOrder(
         )
         .catch(() => {})
 
-      dispatchWebhookEvent('fiat.order.rate_mismatch', {
-        orderId: order.id,
-        provider: order.provider,
-        direction: order.direction,
-        quotedCryptoAmount,
-        settledCryptoAmount,
-        driftPct,
-        userId: order.userId,
-      }).catch(() => {})
+      publishUserEvent(
+        order.userId,
+        EVENT_TYPE_TOPIC['fiat.order.rate_mismatch'],
+        'fiat.order.rate_mismatch',
+        {
+          orderId: order.id,
+          provider: order.provider,
+          direction: order.direction,
+          quotedCryptoAmount,
+          settledCryptoAmount,
+          driftPct,
+          userId: order.userId,
+        }
+      ).catch(() => {})
     }
   }
 

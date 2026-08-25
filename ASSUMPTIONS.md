@@ -113,3 +113,60 @@ riskCeiling? }`** — the three keys `src/agent/loop.ts` actually reads.
     written here despite being out of scope for #322.** It was missing, which
     fails `scripts/check-migration-rollback.sh` on `main` and would have left
     this branch's CI red for an unrelated reason. Flagged in the PR description.
+
+---
+
+## Issue #316 — Authenticated Real-Time WebSocket Streaming
+
+1. **The durable stream is Postgres, not a Redis Stream.** `src/config/redis.ts`
+   degrades to a no-op when `REDIS_URL` is unset — the configuration most
+   environments and the whole test suite run — so a Redis-backed stream would
+   make `resume afterSeq` silently unavailable exactly where it is hardest to
+   notice, and would put durability on a store we treat elsewhere as a cache.
+   Redis stays in the design as the cross-pod *transport*. Justified in code on
+   `model UserEvent` in `prisma/schema.prisma`.
+
+2. **Stream retention defaults to 7 days and 5000 rows per user.** This table
+   exists to close a reconnect gap, not to be a second event log — `Transaction`
+   and `ProcessedEvent` remain the durable record. Both bounds are needed: age
+   alone lets one pathological account grow without limit inside the window.
+
+3. **`seq` is exposed to clients as a JSON `number`, not a string.** Postgres
+   returns `BIGINT` and Prisma maps it to `bigint`, which `JSON.stringify`
+   refuses. A per-user counter would need to pass 2^53 events before the
+   conversion could lose precision.
+
+4. **`subscribe` starts at "now"; only `resume` replays.** A client that wants
+   history asks for it. Making `subscribe` replay by default would turn every
+   fresh connection into a retention-sized read.
+
+5. **Coalescing is opt-in per subscription and lossy for `resume`.** Suppressed
+   events stay in the store but are not redelivered, because the client's
+   `afterSeq` has already moved past them. Default-off makes that the client's
+   trade, not the server's.
+
+6. **A revoked session is caught by polling, not by a push.** `WS_SESSION_RECHECK_MS`
+   (60s) re-verifies each live socket. Polling is the one mechanism that covers
+   every way a session can die — logout, expiry, deactivation, admin action —
+   without each of those code paths needing to know sockets exist. Logout
+   additionally closes sockets immediately on the pod handling it.
+
+7. **Delegated topic mapping: `VIEW` → portfolio/transactions/agent/alerts,
+   `MANAGE_STRATEGY` → strategies.** `DEPOSIT`/`WITHDRAW` add no topics of their
+   own — the confirmations they produce are already covered by `transactions`
+   under `VIEW`.
+
+8. **The webhook leg still receives the unredacted payload.** Webhook
+   subscriptions are operator-scoped and their endpoints are trusted servers;
+   an end user's browser is not. Only the socket payload is projected onto the
+   per-event-type allowlist.
+
+9. **`agent.rebalanced` from `src/stellar/events.ts` has no user stream.** The
+   contract event is protocol-wide with no user to address, so it publishes with
+   an empty user list and reaches the webhook channel alone. The per-user view
+   of a rebalance comes from `src/agent/loop.ts`, which knows whose positions
+   moved.
+
+10. **A `?token=` query parameter is deliberately unsupported.** URLs reach
+    access logs, proxy logs, and referrers, and the handshake token is a live
+    session. Browsers use the `Sec-WebSocket-Protocol: bearer, <jwt>` pair.
