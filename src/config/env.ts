@@ -462,6 +462,58 @@ export const config = {
   shutdown: {
     drainTimeoutMs: parseInt(process.env.SHUTDOWN_DRAIN_TIMEOUT_MS || '30000'),
   },
+  /**
+   * Authenticated real-time WebSocket stream (#316) — see
+   * docs/WEBSOCKET_STREAMING.md for the client contract these bounds imply.
+   */
+  websocket: {
+    /** Mount path of the upgrade endpoint. */
+    path: process.env.WS_PATH || '/api/v1/ws',
+    /** Ping cadence. A peer that misses two consecutive pongs is closed. */
+    heartbeatIntervalMs: parseInt(
+      process.env.WS_HEARTBEAT_INTERVAL_MS || '30000'
+    ),
+    /** How long a socket may stay silent (no pong, no frame) before closing. */
+    idleTimeoutMs: parseInt(process.env.WS_IDLE_TIMEOUT_MS || '90000'),
+    /**
+     * Per-connection outbound buffer bound. Past this the connection is marked
+     * gapped and events are dropped with a resumable marker rather than queued
+     * — a slow consumer must cost its own liveness, never the pod's memory.
+     */
+    maxBufferedEvents: parseInt(process.env.WS_MAX_BUFFERED_EVENTS || '256'),
+    /** Socket-level backpressure bound (bytes still unflushed by the kernel). */
+    maxBufferedBytes: parseInt(
+      process.env.WS_MAX_BUFFERED_BYTES || String(1024 * 1024)
+    ),
+    /** Simultaneous connections one authenticated user may hold on one pod. */
+    maxConnectionsPerUser: parseInt(
+      process.env.WS_MAX_CONNECTIONS_PER_USER || '5'
+    ),
+    /** Handshake flood guard, per source IP. A connection flood is a DoS. */
+    handshakeRateLimit: {
+      windowMs: parseInt(process.env.WS_HANDSHAKE_WINDOW_MS || '60000'),
+      max: parseInt(process.env.WS_HANDSHAKE_MAX || '30'),
+    },
+    /** Client→server message rate. Exceeding it closes the socket. */
+    messageRateLimit: {
+      windowMs: parseInt(process.env.WS_MESSAGE_WINDOW_MS || '10000'),
+      max: parseInt(process.env.WS_MESSAGE_MAX || '50'),
+    },
+    /** Largest client frame accepted. Client messages are tiny control frames. */
+    maxMessageBytes: parseInt(process.env.WS_MAX_MESSAGE_BYTES || '4096'),
+    /** Events one `resume` may replay before the client must resume again. */
+    replayMaxEvents: parseInt(process.env.WS_REPLAY_MAX_EVENTS || '1000'),
+    /**
+     * How often a live connection re-verifies its session against the database,
+     * so a logout or a deactivated account kills the socket rather than waiting
+     * for it to disconnect on its own.
+     */
+    sessionRecheckMs: parseInt(process.env.WS_SESSION_RECHECK_MS || '60000'),
+    /** Coalescing window for clients that opt in at subscribe time. */
+    coalesceWindowMs: parseInt(process.env.WS_COALESCE_WINDOW_MS || '250'),
+    /** How long a draining client should wait before reconnecting. */
+    drainRetryAfterMs: parseInt(process.env.WS_DRAIN_RETRY_AFTER_MS || '2000'),
+  },
   retention: {
     processedEventsDays: parseInt(
       process.env.RETENTION_PROCESSED_EVENTS_DAYS || '90'
@@ -470,6 +522,20 @@ export const config = {
       process.env.RETENTION_DEAD_LETTER_EVENTS_DAYS || '30'
     ),
     agentLogsDays: parseInt(process.env.RETENTION_AGENT_LOGS_DAYS || '60'),
+    /**
+     * Real-time stream retention (#316). Short by design: this table exists to
+     * close a reconnect gap, not to be a second event log — ProcessedEvent and
+     * Transaction remain the durable record. A client offline longer than this
+     * gets a `gap` frame and re-fetches a REST snapshot.
+     */
+    userEventsDays: parseInt(process.env.RETENTION_USER_EVENTS_DAYS || '7'),
+    /**
+     * Per-user row cap, enforced alongside the age sweep. Age alone lets one
+     * pathological account grow without bound inside the window.
+     */
+    userEventsMaxPerUser: parseInt(
+      process.env.USER_EVENT_STREAM_MAX_PER_USER || '5000'
+    ),
     intervalMs: parseInt(process.env.RETENTION_INTERVAL_MS || '86400000'),
   },
   protocolRisk: {
@@ -544,5 +610,13 @@ export const config = {
       process.env.OUTBOX_PER_ACCOUNT_MAX_IN_FLIGHT || '1'
     ),
     batchSize: parseInt(process.env.OUTBOX_BATCH_SIZE || '20'),
+  },
+  apiKeys: {
+    maxActivePerUser: parseInt(process.env.USER_API_KEY_MAX_ACTIVE || '10'),
+    withdrawalsEnabled:
+      (process.env.USER_API_KEY_WITHDRAWALS_ENABLED ?? 'true') === 'true',
+  },
+  sessions: {
+    revokedRetainDays: parseInt(process.env.REVOKED_SESSION_RETAIN_DAYS || '7'),
   },
 }
