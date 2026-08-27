@@ -83,6 +83,7 @@ import alertsRouter from './routes/alerts'
 import strategiesRouter from './routes/strategies'
 import subAccountsRouter from './routes/sub-accounts'
 import keysRouter from './routes/keys'
+import sessionsRouter from './routes/sessions'
 import {
   corsMiddleware,
   jsonBodyParser,
@@ -302,6 +303,7 @@ const apiRoutes: ApiRoute[] = [
   { path: 'strategies', handlers: [strategiesRouter] },
   { path: 'sub-accounts', handlers: [subAccountsRouter] },
   { path: 'keys', handlers: [keysRouter] },
+  { path: 'sessions', handlers: [sessionsRouter] },
   { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
 ]
 

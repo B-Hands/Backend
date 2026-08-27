@@ -616,4 +616,9 @@ export const config = {
     withdrawalsEnabled:
       (process.env.USER_API_KEY_WITHDRAWALS_ENABLED ?? 'true') === 'true',
   },
+  sessions: {
+    revokedRetainDays: parseInt(
+      process.env.REVOKED_SESSION_RETAIN_DAYS || '7'
+    ),
+  },
 }

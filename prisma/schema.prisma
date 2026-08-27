@@ -281,6 +281,13 @@ model Session {
   refreshTokenExpiresAt DateTime?
   ipAddress             String?
   userAgent             String?
+  label                 String?
+  deviceType            String?
+  lastSeenAt            DateTime?
+  lastSeenIp            String?
+  revokedAt             DateTime?
+  revokedReason         String?
+  approxLocation        String?
   createdAt             DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -288,6 +295,7 @@ model Session {
   @@index([userId])
   @@index([expiresAt])
   @@index([userId, expiresAt])
+  @@index([revokedAt])
   @@map("sessions")
 }
 

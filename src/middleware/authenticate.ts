@@ -35,6 +35,25 @@ function isExpired(date: Date): boolean {
   return date < new Date()
 }
 
+const lastSeenThrottle = new Map<string, number>()
+const LAST_SEEN_THROTTLE_MS = 60_000
+
+function updateLastSeenAsync(sessionId: string, ip: string | undefined): void {
+  const now = Date.now()
+  const last = lastSeenThrottle.get(sessionId) ?? 0
+  if (now - last < LAST_SEEN_THROTTLE_MS) return
+  lastSeenThrottle.set(sessionId, now)
+
+  db.session
+    .update({
+      where: { id: sessionId },
+      data: { lastSeenAt: new Date(), lastSeenIp: ip ?? null },
+    })
+    .catch((err) =>
+      logger.warn('[Auth] Failed to update lastSeenAt', { sessionId, err })
+    )
+}
+
 // ─── Middleware ───────────────────────────────────────────────────────────────
 
 /**
@@ -99,6 +118,12 @@ export async function requireAuth(
       return
     }
 
+    // #376 — revoked sessions fail immediately
+    if (session.revokedAt) {
+      res.status(401).json({ error: AUTH_ERRORS.SESSION_REVOKED })
+      return
+    }
+
     // 5. Expiry check — delete stale row in the background, don't await
     if (isExpired(session.expiresAt)) {
       db.session
@@ -127,6 +152,8 @@ export async function requireAuth(
       walletAddress: session.walletAddress,
       network: session.network,
     }
+
+    updateLastSeenAsync(session.id, req.ip)
 
     next()
   } catch (error) {
