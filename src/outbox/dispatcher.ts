@@ -21,7 +21,8 @@
 import { logger } from '../utils/logger'
 import { config } from '../config/env'
 import { alertingService } from '../services/alerting'
-import { dispatchWebhookEvent } from '../services/webhookDispatcher'
+import { publishUserEvent } from '../events/publisher'
+import { EVENT_TYPE_TOPIC } from '../events/types'
 import { TransactionResult } from '../stellar/types'
 import { getSignerLock } from './signerLock'
 import { resolveSignerPublicKey, executeOutboxPayload } from './executors'
@@ -92,13 +93,18 @@ async function onTerminalFailure(
       logger.error('[Outbox] Failed to emit terminal-failure alert', { err })
     )
 
-  await dispatchWebhookEvent('outbox.op_failed', {
-    opId: op.id,
-    kind: op.kind,
-    userId: op.userId,
-    attempts: op.attempts,
-    error: errorMessage,
-  }).catch(() => {})
+  await publishUserEvent(
+    op.userId,
+    EVENT_TYPE_TOPIC['outbox.op_failed'],
+    'outbox.op_failed',
+    {
+      opId: op.id,
+      kind: op.kind,
+      userId: op.userId,
+      attempts: op.attempts,
+      error: errorMessage,
+    }
+  ).catch(() => {})
 }
 
 /**

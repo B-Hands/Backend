@@ -58,6 +58,8 @@ import { scheduleProtocolRiskScoring } from './jobs/protocolRiskScoring'
 import { schedulePortfolioRiskJob } from './jobs/portfolioRisk'
 import { scheduleApprovalExpiry } from './jobs/approvalExpiry'
 import { startEventListener, stopEventListener } from './stellar/events'
+import { startEventBridge, stopEventBridge } from './events/bridge'
+import { attachWebSocketServer, closeWebSocketServer } from './ws/server'
 import { validateStellarNetworkReady } from './config/readiness'
 import healthRouter from './routes/health'
 import agentRouter from './routes/agent'
@@ -83,6 +85,10 @@ import strategiesRouter from './routes/strategies'
 import subAccountsRouter from './routes/sub-accounts'
 import approvalsRouter from './routes/approvals'
 import approvalPoliciesRouter from './routes/approval-policies'
+import keysRouter from './routes/keys'
+import sessionsRouter from './routes/sessions'
+import streamRouter from './routes/stream'
+import notificationsRouter from './routes/notifications'
 import {
   corsMiddleware,
   jsonBodyParser,
@@ -304,6 +310,10 @@ const apiRoutes: ApiRoute[] = [
   { path: 'sub-accounts', handlers: [subAccountsRouter] },
   { path: 'approvals', handlers: [approvalsRouter] },
   { path: 'approval-policies', handlers: [approvalPoliciesRouter] },
+  { path: 'keys', handlers: [keysRouter] },
+  { path: 'sessions', handlers: [sessionsRouter] },
+  { path: 'stream', handlers: [streamRouter] },
+  { path: 'notifications', handlers: [notificationsRouter] },
   { path: 'admin', handlers: [adminRateLimiter, adminRouter] },
 ]
 
@@ -425,6 +435,16 @@ async function gracefulShutdown(signal: string): Promise<void> {
     logger.warn('[Shutdown] No HTTP server to close')
     process.exit(0)
   }
+
+  // #316: WebSocket sockets must drain BEFORE httpServer.close(). An open
+  // WebSocket is a live HTTP connection, so closing the HTTP server first would
+  // simply block on them until the grace period expired and then cut them
+  // without warning. Draining first gives each client a `draining` frame
+  // carrying the seq to resume after, so a rolling deploy costs a reconnect
+  // rather than a REST snapshot. Awaited — connection cleanup is not optional.
+  logger.info('[Shutdown] Draining WebSocket connections...')
+  await closeWebSocketServer()
+  await stopEventBridge()
 
   logger.info('[Shutdown] Closing HTTP server (no new requests accepted)')
   httpServer.close(async () => {
@@ -566,6 +586,24 @@ async function main(): Promise<void> {
   httpServer = app.listen(config.port, () => {
     logger.info(`[Startup] HTTP server listening on port ${config.port} ✓`)
     logger.info('[Startup] All systems operational — ready to serve requests')
+  })
+
+  // #316: authenticated real-time stream. Attached to the same HTTP server, so
+  // it inherits the TLS termination, proxy configuration, and port the REST
+  // surface already has. Started after listen() because it hooks the server's
+  // 'upgrade' event, and the bridge is started alongside it so cross-pod
+  // envelopes have somewhere to land the moment a socket connects.
+  attachWebSocketServer(httpServer)
+  await startEventBridge().catch((error) => {
+    // A bridge failure degrades multi-pod delivery to pod-local delivery; it is
+    // not a reason to refuse to serve traffic. Clients close the resulting gap
+    // with `resume afterSeq`.
+    logger.error(
+      '[Startup] Event bridge failed to start — continuing with pod-local delivery only',
+      {
+        error: error instanceof Error ? error.message : String(error),
+      }
+    )
   })
 
   process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))

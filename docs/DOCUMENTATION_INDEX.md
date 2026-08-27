@@ -13,6 +13,7 @@
 - **[PORTFOLIO_OPTIMIZATION.md](PORTFOLIO_OPTIMIZATION.md)** - Portfolio optimization & allocation suggestions: objective, λ mapping, estimation method, advisory invariant, limitations (#322)
 - **[PERFORMANCE_ATTRIBUTION.md](PERFORMANCE_ATTRIBUTION.md)** - Benchmark-relative Brinson attribution: allocation/selection effects, Cariño linking, benchmark definition, `vsBenchmark` on the marketplace (#320)
 - **[OUTBOX.md](OUTBOX.md)** - Durable outbox & prioritized on-chain transaction queue: state machine, idempotency, retry/fee-bump policy, priority ordering, admin API (#325)
+- **[WEBSOCKET_STREAMING.md](WEBSOCKET_STREAMING.md)** - Authenticated real-time WebSocket streaming: handshake auth, topics, seq/resume replay, gap handling, backpressure, sub-account scoping, multi-pod bridge (#316)
 
 ### For DevOps/Deployment
 
