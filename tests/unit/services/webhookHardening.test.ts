@@ -33,7 +33,12 @@ describe('Webhook hardening (#377)', () => {
 
     it('builds combined v1+v2 header', () => {
       const secret = generateWebhookSecret()
-      const header = buildSignatureHeader([secret], '{"a":1}', 1700000000, 'del-1')
+      const header = buildSignatureHeader(
+        [secret],
+        '{"a":1}',
+        1700000000,
+        'del-1'
+      )
       expect(header).toContain('v2,')
       expect(header).toContain('v1,')
     })

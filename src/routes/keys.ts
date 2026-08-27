@@ -13,11 +13,7 @@ import { validate } from '../middleware/validate'
 import { sendNotFound } from '../utils/errors'
 import { config } from '../config'
 import { logger } from '../utils/logger'
-import {
-  validateUserScopes,
-  USER_SCOPES,
-  type UserScope,
-} from '../auth/scopes'
+import { validateUserScopes, USER_SCOPES, type UserScope } from '../auth/scopes'
 import { publishUserEvent } from '../events/publisher'
 
 const router = Router()
@@ -45,15 +41,21 @@ router.post(
   validate({ body: createKeySchema }),
   async (req: Request, res: Response) => {
     const userId = req.auth!.userId
-    const { name, scopes, ipAllowlist, rateLimitPerMin, expiresAt, allowWithdrawals } =
-      req.body as {
-        name: string
-        scopes: string[]
-        ipAllowlist?: string[]
-        rateLimitPerMin?: number
-        expiresAt?: string
-        allowWithdrawals?: boolean
-      }
+    const {
+      name,
+      scopes,
+      ipAllowlist,
+      rateLimitPerMin,
+      expiresAt,
+      allowWithdrawals,
+    } = req.body as {
+      name: string
+      scopes: string[]
+      ipAllowlist?: string[]
+      rateLimitPerMin?: number
+      expiresAt?: string
+      allowWithdrawals?: boolean
+    }
 
     if (!validateUserScopes(scopes)) {
       return res.status(400).json({

@@ -14,9 +14,7 @@ interface CircuitHealth {
 
 const THRESHOLD = Number(process.env.WEBHOOK_CIRCUIT_BREAKER_THRESHOLD || 5)
 const RESET_MS = Number(process.env.WEBHOOK_CIRCUIT_BREAKER_RESET_MS || 60_000)
-const AUTO_DISABLE_HOURS = Number(
-  process.env.WEBHOOK_AUTO_DISABLE_HOURS || 24
-)
+const AUTO_DISABLE_HOURS = Number(process.env.WEBHOOK_AUTO_DISABLE_HOURS || 24)
 
 const health = new Map<string, CircuitHealth>()
 
@@ -61,7 +59,9 @@ export function recordDeliverySuccess(subscriptionId: string): void {
   h.openedUntil = null
 }
 
-export function recordDeliveryFailure(subscriptionId: string): WebhookCircuitState {
+export function recordDeliveryFailure(
+  subscriptionId: string
+): WebhookCircuitState {
   const h = getHealth(subscriptionId)
   h.consecutiveFailures++
   h.lastFailureAt = Date.now()
@@ -73,7 +73,10 @@ export function recordDeliveryFailure(subscriptionId: string): WebhookCircuitSta
   return h.state
 }
 
-export function recordHalfOpenProbe(subscriptionId: string, success: boolean): void {
+export function recordHalfOpenProbe(
+  subscriptionId: string,
+  success: boolean
+): void {
   const h = getHealth(subscriptionId)
   if (success) {
     h.state = 'closed'

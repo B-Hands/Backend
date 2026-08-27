@@ -9,7 +9,9 @@ const GEO_HINTS: Array<{ prefix: string; location: string }> = [
   { prefix: '1.1.', location: 'Sydney, AU' },
 ]
 
-export function resolveApproxLocation(ip: string | null | undefined): string | null {
+export function resolveApproxLocation(
+  ip: string | null | undefined
+): string | null {
   if (!ip || PRIVATE_IP.test(ip)) return null
 
   for (const hint of GEO_HINTS) {

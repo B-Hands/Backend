@@ -33,7 +33,12 @@ describe('Idempotency middleware (#375)', () => {
       method: 'POST',
       path: '/deposit',
       body: { amount: 100 },
-      auth: { userId: 'user-1', sessionId: 's1', walletAddress: 'G...', network: 'MAINNET' },
+      auth: {
+        userId: 'user-1',
+        sessionId: 's1',
+        walletAddress: 'G...',
+        network: 'MAINNET',
+      },
       header: jest.fn((name: string) => {
         if (name === 'Idempotency-Key') return 'key-abc'
         return undefined
@@ -99,7 +104,9 @@ describe('Idempotency middleware (#375)', () => {
     )
     await idempotent({ required: true })(req as Request, res as Response, next)
     expect(res.status).toHaveBeenCalledWith(409)
-    expect(res.json).toHaveBeenCalledWith({ error: 'idempotency_request_in_flight' })
+    expect(res.json).toHaveBeenCalledWith({
+      error: 'idempotency_request_in_flight',
+    })
   })
 
   it('returns 503 when failClosed and no redis', async () => {

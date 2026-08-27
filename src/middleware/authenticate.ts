@@ -2,10 +2,7 @@ import { NextFunction, Request, Response } from 'express'
 import { JwtAdapter } from '../config'
 import db from '../db'
 import { logger } from '../utils/logger'
-import {
-  authenticateApiKey,
-  isUserApiKeyToken,
-} from './apiKeyAuth'
+import { authenticateApiKey, isUserApiKeyToken } from './apiKeyAuth'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

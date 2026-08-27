@@ -21,8 +21,7 @@ export async function cleanupExpiredSessions(): Promise<void> {
     try {
       const now = new Date()
       const revokedCutoff = new Date(
-        now.getTime() -
-          config.sessions.revokedRetainDays * 24 * 60 * 60 * 1000
+        now.getTime() - config.sessions.revokedRetainDays * 24 * 60 * 60 * 1000
       )
 
       const [expiredResult, revokedResult] = await Promise.all([

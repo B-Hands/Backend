@@ -108,7 +108,9 @@ router.delete(
       id: req.params.id,
       status: 'revoked',
       current: isCurrent,
-      message: isCurrent ? 'Current session revoked; please sign in again' : undefined,
+      message: isCurrent
+        ? 'Current session revoked; please sign in again'
+        : undefined,
     })
   }
 )

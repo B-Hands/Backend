@@ -1,7 +1,9 @@
 /** Best-effort device type from User-Agent (#376). Not a security control. */
 export type DeviceType = 'web' | 'ios' | 'android' | 'cli' | 'unknown'
 
-export function parseDeviceType(userAgent: string | null | undefined): DeviceType {
+export function parseDeviceType(
+  userAgent: string | null | undefined
+): DeviceType {
   if (!userAgent) return 'unknown'
   const ua = userAgent.toLowerCase()
 

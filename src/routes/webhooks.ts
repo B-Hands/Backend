@@ -3,17 +3,13 @@ import db from '../db'
 import { requireAuth } from '../middleware/authenticate'
 import { validate } from '../middleware/validate'
 import { sendNotFound } from '../utils/errors'
-import {
-  generateWebhookSecret,
-} from '../utils/webhookSignature'
+import { generateWebhookSecret } from '../utils/webhookSignature'
 import {
   createWebhookSchema,
   updateWebhookSchema,
   webhookIdParamSchema,
 } from '../validators/webhook-validators'
-import {
-  getSubscriptionHealth,
-} from '../services/webhookCircuitBreaker'
+import { getSubscriptionHealth } from '../services/webhookCircuitBreaker'
 import { replayDeadLetter } from '../services/webhookDispatcher'
 import { logger } from '../utils/logger'
 
@@ -55,7 +51,8 @@ router.post(
 
     if (!isAllowedWebhookUrl(url)) {
       return res.status(400).json({
-        error: 'Webhook URL must be HTTPS and not point to private/local addresses',
+        error:
+          'Webhook URL must be HTTPS and not point to private/local addresses',
       })
     }
 
@@ -188,7 +185,8 @@ router.post(
     return res.status(200).json({
       secretNext,
       secretNextActiveAt: activeAt.toISOString(),
-      message: 'Dual-signing active until promotion. Store the new secret securely.',
+      message:
+        'Dual-signing active until promotion. Store the new secret securely.',
     })
   }
 )

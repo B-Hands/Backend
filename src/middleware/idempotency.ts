@@ -24,9 +24,7 @@ interface IdempotencyRecord {
 }
 
 const LOCK_TTL_MS = 30_000
-const IDEM_MAX_BODY_BYTES = parseInt(
-  process.env.IDEM_MAX_BODY_BYTES || '65536'
-)
+const IDEM_MAX_BODY_BYTES = parseInt(process.env.IDEM_MAX_BODY_BYTES || '65536')
 
 function redisKey(userId: string, key: string): string {
   return `idem:${userId}:${key}`
@@ -52,10 +50,7 @@ function sortKeys(obj: Record<string, unknown>): Record<string, unknown> {
   return result
 }
 
-function computeFingerprint(
-  req: Request,
-  userId: string
-): string {
+function computeFingerprint(req: Request, userId: string): string {
   const body = canonicalizeBody(req.body)
   const raw = `${req.method}:${req.path}:${userId}:${body}`
   return createHash('sha256').update(raw).digest('hex')
@@ -215,7 +210,10 @@ export function idempotent(options: IdempotencyOptions = {}) {
       const retry = await redis.get(rKey)
       if (retry) {
         const parsed = JSON.parse(retry) as IdempotencyRecord
-        if (parsed.status === 'completed' && parsed.fingerprint === fingerprint) {
+        if (
+          parsed.status === 'completed' &&
+          parsed.fingerprint === fingerprint
+        ) {
           res.setHeader('Idempotency-Replayed', 'true')
           res.status(parsed.statusCode ?? 200).json(parsed.responseBody)
           return
@@ -243,7 +241,9 @@ export function idempotent(options: IdempotencyOptions = {}) {
       if (redis) {
         redis
           .set(rKey, JSON.stringify(record), 'EX', ttlSeconds)
-          .catch((err) => logger.warn('[Idempotency] Redis store failed', { err }))
+          .catch((err) =>
+            logger.warn('[Idempotency] Redis store failed', { err })
+          )
       }
       persistDbRecord(userId, idempotencyKey, record, ttlSeconds)
 

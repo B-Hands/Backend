@@ -13,7 +13,9 @@ import {
 
 const MAX_ATTEMPTS = parseInt(process.env.WEBHOOK_MAX_ATTEMPTS || '6')
 const BASE_DELAY_MS = parseInt(process.env.WEBHOOK_BASE_DELAY_MS || '1000')
-const DELIVERY_TIMEOUT_MS = parseInt(process.env.WEBHOOK_DELIVERY_TIMEOUT_MS || '10000')
+const DELIVERY_TIMEOUT_MS = parseInt(
+  process.env.WEBHOOK_DELIVERY_TIMEOUT_MS || '10000'
+)
 const WORKER_POOL_SIZE = parseInt(process.env.WEBHOOK_WORKER_POOL_SIZE || '5')
 
 interface SubscriptionRow {
@@ -94,7 +96,12 @@ async function deliverOnce(
 
   const timestamp = Math.floor(Date.now() / 1000)
   const secrets = getSigningSecrets(sub)
-  const signature = buildSignatureHeader(secrets, payload, timestamp, deliveryId)
+  const signature = buildSignatureHeader(
+    secrets,
+    payload,
+    timestamp,
+    deliveryId
+  )
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -153,9 +160,12 @@ export async function deliverToSubscription(
         where: { id: sub.id },
         data: { isActive: false },
       })
-      logger.warn('[Webhook] Auto-disabled subscription after prolonged circuit open', {
-        subscriptionId: sub.id,
-      })
+      logger.warn(
+        '[Webhook] Auto-disabled subscription after prolonged circuit open',
+        {
+          subscriptionId: sub.id,
+        }
+      )
     }
     return
   }
@@ -248,12 +258,15 @@ async function runWithPool<T>(
   fn: (item: T) => Promise<void>
 ): Promise<void> {
   let index = 0
-  const workers = Array.from({ length: Math.min(WORKER_POOL_SIZE, items.length) }, async () => {
-    while (index < items.length) {
-      const i = index++
-      await fn(items[i])
+  const workers = Array.from(
+    { length: Math.min(WORKER_POOL_SIZE, items.length) },
+    async () => {
+      while (index < items.length) {
+        const i = index++
+        await fn(items[i])
+      }
     }
-  })
+  )
   await Promise.allSettled(workers)
 }
 
@@ -293,12 +306,10 @@ export async function replayDeadLetter(deadLetterId: string): Promise<boolean> {
   if (!dl || dl.status !== 'PENDING') return false
 
   const payload = dl.payload as Record<string, unknown>
-  await deliverToSubscription(
-    dl.subscription,
-    dl.event,
-    payload,
-    { isReplay: true, occurredAt: dl.firstFailedAt.toISOString() }
-  )
+  await deliverToSubscription(dl.subscription, dl.event, payload, {
+    isReplay: true,
+    occurredAt: dl.firstFailedAt.toISOString(),
+  })
 
   await (db as any).webhookDeadLetter.update({
     where: { id: deadLetterId },

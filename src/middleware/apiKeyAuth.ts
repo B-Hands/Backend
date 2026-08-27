@@ -67,7 +67,16 @@ export async function authenticateApiKey(
         revokedAt: null,
         OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
       },
-      include: { user: { select: { id: true, isActive: true, walletAddress: true, network: true } } },
+      include: {
+        user: {
+          select: {
+            id: true,
+            isActive: true,
+            walletAddress: true,
+            network: true,
+          },
+        },
+      },
     })
 
     if (!key) {
