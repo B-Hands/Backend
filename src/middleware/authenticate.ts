@@ -2,6 +2,10 @@ import { NextFunction, Request, Response } from 'express'
 import { JwtAdapter } from '../config'
 import db from '../db'
 import { logger } from '../utils/logger'
+import {
+  authenticateApiKey,
+  isUserApiKeyToken,
+} from './apiKeyAuth'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -13,6 +17,7 @@ const AUTH_ERRORS = {
   INVALID_TOKEN: 'Invalid token',
   SESSION_NOT_FOUND: 'Session not found',
   SESSION_EXPIRED: 'Session expired',
+  SESSION_REVOKED: 'session_revoked',
   USER_INACTIVE: 'User account is inactive',
   INTERNAL_ERROR: 'Internal server error',
 } as const
@@ -70,6 +75,11 @@ export async function requireAuth(
     return
   }
 
+  // #374 — route scoped per-user API keys via dedicated auth path
+  if (isUserApiKeyToken(token)) {
+    return authenticateApiKey(req, res, next)
+  }
+
   try {
     // 3. JWT signature verification
     const payload = await JwtAdapter.validateToken<{ id: string }>(token)
@@ -109,6 +119,8 @@ export async function requireAuth(
     // 7. Attach identity to request
     req.userId = session.user.id
     req.stellarPubKey = session.walletAddress
+    req.authKind = 'session'
+    req.authScopes = ['*']
     req.auth = {
       userId: session.userId,
       sessionId: session.id,

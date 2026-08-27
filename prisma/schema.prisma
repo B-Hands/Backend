@@ -225,8 +225,32 @@ model User {
   portfolioRiskAggregates PortfolioRiskAggregate[]
   userEvents              UserEvent[]
   userEventSequence       UserEventSequence?
+  userApiKeys             UserApiKey[]
 
   @@map("users")
+}
+
+model UserApiKey {
+  id               String    @id @default(uuid())
+  userId           String
+  name             String
+  scopes           String[]
+  hash             String
+  tokenPrefix      String
+  ipAllowlist      String[]  @default([])
+  rateLimitPerMin  Int?
+  allowWithdrawals Boolean   @default(false)
+  lastUsedAt       DateTime?
+  lastUsedIp       String?
+  expiresAt        DateTime?
+  revokedAt        DateTime?
+  createdAt        DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenPrefix])
+  @@map("user_api_keys")
 }
 
 model Session {
