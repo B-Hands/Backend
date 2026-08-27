@@ -227,10 +227,49 @@ model User {
   portfolioRiskAggregates PortfolioRiskAggregate[]
   userEvents              UserEvent[]
   userEventSequence       UserEventSequence?
-  userWebhookEndpoints    UserWebhookEndpoint[]
-  emailIdentity           EmailIdentity?
+  userApiKeys             UserApiKey[]
 
   @@map("users")
+}
+
+model UserApiKey {
+  id               String    @id @default(uuid())
+  userId           String
+  name             String
+  scopes           String[]
+  hash             String
+  tokenPrefix      String
+  ipAllowlist      String[]  @default([])
+  rateLimitPerMin  Int?
+  allowWithdrawals Boolean   @default(false)
+  lastUsedAt       DateTime?
+  lastUsedIp       String?
+  expiresAt        DateTime?
+  revokedAt        DateTime?
+  createdAt        DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenPrefix])
+  @@map("user_api_keys")
+}
+
+model IdempotencyRecord {
+  id             String   @id @default(uuid())
+  userId         String
+  idempotencyKey String
+  fingerprint    String
+  status         String   // in_progress | completed
+  statusCode     Int?
+  responseBody   Json?
+  completedAt    DateTime?
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+
+  @@unique([userId, idempotencyKey])
+  @@index([expiresAt])
+  @@map("idempotency_records")
 }
 
 model Session {
@@ -244,6 +283,13 @@ model Session {
   refreshTokenExpiresAt DateTime?
   ipAddress             String?
   userAgent             String?
+  label                 String?
+  deviceType            String?
+  lastSeenAt            DateTime?
+  lastSeenIp            String?
+  revokedAt             DateTime?
+  revokedReason         String?
+  approxLocation        String?
   createdAt             DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -251,6 +297,7 @@ model Session {
   @@index([userId])
   @@index([expiresAt])
   @@index([userId, expiresAt])
+  @@index([revokedAt])
   @@map("sessions")
 }
 
@@ -665,17 +712,21 @@ enum WebhookDeliveryStatus {
 }
 
 model WebhookSubscription {
-  id        String   @id @default(uuid())
-  userId    String
-  url       String
-  events    String[]
-  secret    String
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                 String    @id @default(uuid())
+  userId             String
+  url                String
+  events             String[]
+  secret             String
+  secretNext         String?
+  secretNextActiveAt DateTime?
+  isActive           Boolean   @default(true)
+  autoReplay         Boolean   @default(false)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
-  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  deliveries WebhookDelivery[]
+  user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries  WebhookDelivery[]
+  deadLetters WebhookDeadLetter[]
 
   @@index([userId])
   @@map("webhook_subscriptions")
@@ -699,6 +750,23 @@ model WebhookDelivery {
   @@index([status])
   @@index([createdAt])
   @@map("webhook_deliveries")
+}
+
+model WebhookDeadLetter {
+  id             String   @id @default(uuid())
+  subscriptionId String
+  event          String
+  payload        Json
+  firstFailedAt  DateTime
+  lastError      String
+  attempts       Int
+  status         String   // PENDING | REPLAYED | RESOLVED | DISCARDED
+  createdAt      DateTime @default(now())
+
+  subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId, status])
+  @@map("webhook_dead_letters")
 }
 
 /// User-defined price & yield alert rule (#289).

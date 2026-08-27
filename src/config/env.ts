@@ -611,4 +611,12 @@ export const config = {
     ),
     batchSize: parseInt(process.env.OUTBOX_BATCH_SIZE || '20'),
   },
+  apiKeys: {
+    maxActivePerUser: parseInt(process.env.USER_API_KEY_MAX_ACTIVE || '10'),
+    withdrawalsEnabled:
+      (process.env.USER_API_KEY_WITHDRAWALS_ENABLED ?? 'true') === 'true',
+  },
+  sessions: {
+    revokedRetainDays: parseInt(process.env.REVOKED_SESSION_RETAIN_DAYS || '7'),
+  },
 }

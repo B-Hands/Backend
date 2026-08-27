@@ -1177,4 +1177,76 @@ router.post(
   }
 )
 
+/**
+ * GET /api/admin/users/:id/sessions — list sessions for a user (#376)
+ */
+router.get(
+  '/users/:id/sessions',
+  requireAdminScope('read'),
+  async (req: Request, res: Response) => {
+    try {
+      const sessions = await prisma.session.findMany({
+        where: { userId: req.params.id },
+        select: {
+          id: true,
+          label: true,
+          deviceType: true,
+          approxLocation: true,
+          ipAddress: true,
+          createdAt: true,
+          lastSeenAt: true,
+          revokedAt: true,
+          revokedReason: true,
+          expiresAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+      })
+
+      auditLog(req, res, 'LIST_USER_SESSIONS', 'success', {
+        userId: req.params.id,
+        count: sessions.length,
+      })
+
+      res.status(200).json({ success: true, data: sessions })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'LIST_USER_SESSIONS', 'failure', { error: message })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
+/**
+ * POST /api/admin/users/:id/sessions/revoke-all — admin revoke all sessions (#376)
+ */
+router.post(
+  '/users/:id/sessions/revoke-all',
+  requireAdminScope('write'),
+  async (req: Request, res: Response) => {
+    try {
+      const result = await prisma.session.updateMany({
+        where: { userId: req.params.id, revokedAt: null },
+        data: { revokedAt: new Date(), revokedReason: 'admin' },
+      })
+
+      auditLog(req, res, 'REVOKE_ALL_USER_SESSIONS', 'success', {
+        userId: req.params.id,
+        count: result.count,
+        reason: req.body?.reason ?? 'admin_action',
+      })
+
+      res.status(200).json({
+        success: true,
+        data: { revokedCount: result.count },
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      auditLog(req, res, 'REVOKE_ALL_USER_SESSIONS', 'failure', {
+        error: message,
+      })
+      res.status(500).json({ success: false, error: message })
+    }
+  }
+)
+
 export default router
