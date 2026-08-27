@@ -8,7 +8,8 @@ import { config } from '../config/env'
 import { recordBackgroundJob } from '../utils/metrics'
 import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
 import { executeDeposit } from '../controllers/transaction-controller'
-import { dispatchWebhookEvent } from '../services/webhookDispatcher'
+import { publishUserEvent } from '../events/publisher'
+import { EVENT_TYPE_TOPIC } from '../events/types'
 import { addCadence } from '../utils/cadence'
 import type { RecurringDepositPlan } from '@prisma/client'
 
@@ -105,14 +106,19 @@ async function executePlan(plan: RecurringDepositPlan): Promise<void> {
         txHash: result.transaction!.txHash,
       })
 
-      dispatchWebhookEvent('recurring_deposit.executed', {
-        planId: plan.id,
-        userId: plan.userId,
-        amount: Number(plan.amount),
-        assetSymbol: plan.assetSymbol,
-        cadence: plan.cadence,
-        txHash: result.transaction!.txHash,
-      }).catch(() => {})
+      publishUserEvent(
+        plan.userId,
+        EVENT_TYPE_TOPIC['recurring_deposit.executed'],
+        'recurring_deposit.executed',
+        {
+          planId: plan.id,
+          userId: plan.userId,
+          amount: Number(plan.amount),
+          assetSymbol: plan.assetSymbol,
+          cadence: plan.cadence,
+          txHash: result.transaction!.txHash,
+        }
+      ).catch(() => {})
     } else if (result.status === 'PENDING_APPROVAL') {
       // Gated by an ApprovalPolicy (#314): skip this occurrence rather than
       // executing or failing it. `nextRunAt` is deliberately left untouched
@@ -164,14 +170,19 @@ async function failPlan(
     reason,
   })
 
-  dispatchWebhookEvent('recurring_deposit.failed', {
-    planId: plan.id,
-    userId: plan.userId,
-    amount: Number(plan.amount),
-    assetSymbol: plan.assetSymbol,
-    cadence: plan.cadence,
-    reason,
-  }).catch(() => {})
+  publishUserEvent(
+    plan.userId,
+    EVENT_TYPE_TOPIC['recurring_deposit.failed'],
+    'recurring_deposit.failed',
+    {
+      planId: plan.id,
+      userId: plan.userId,
+      amount: Number(plan.amount),
+      assetSymbol: plan.assetSymbol,
+      cadence: plan.cadence,
+      reason,
+    }
+  ).catch(() => {})
 }
 
 /**

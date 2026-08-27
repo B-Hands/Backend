@@ -4,7 +4,8 @@ import db from '../db'
 import { formatDepositReply, formatWithdrawReply } from '../whatsapp/formatters'
 import { sendNotFound, sendUnauthorized } from '../utils/errors'
 import { logger } from '../utils/logger'
-import { dispatchWebhookEvent } from '../services/webhookDispatcher'
+import { publishUserEvent } from '../events/publisher'
+import { EVENT_TYPE_TOPIC } from '../events/types'
 import { enqueueOutboxOp } from '../outbox/service'
 import { dispatchOne } from '../outbox/dispatcher'
 import { deriveIdempotencyKey } from '../outbox/idempotency'
@@ -202,14 +203,19 @@ export async function executeDeposit(
   })
 
   if (transaction.status === 'CONFIRMED') {
-    dispatchWebhookEvent('transaction.confirmed', {
-      txHash: transaction.txHash,
-      type: 'DEPOSIT',
-      status: transaction.status,
-      assetSymbol,
-      amount,
+    publishUserEvent(
       userId,
-    }).catch(() => {})
+      EVENT_TYPE_TOPIC['transaction.confirmed'],
+      'transaction.confirmed',
+      {
+        txHash: transaction.txHash,
+        type: 'DEPOSIT',
+        status: transaction.status,
+        assetSymbol,
+        amount,
+        userId,
+      }
+    ).catch(() => {})
   }
 
   return {
@@ -317,15 +323,20 @@ export async function executeWithdraw(
   })
 
   if (transaction.status === 'CONFIRMED') {
-    dispatchWebhookEvent('transaction.confirmed', {
-      txHash: transaction.txHash,
-      type: 'WITHDRAWAL',
-      status: transaction.status,
-      assetSymbol,
-      amount,
-      protocolName,
+    publishUserEvent(
       userId,
-    }).catch(() => {})
+      EVENT_TYPE_TOPIC['transaction.confirmed'],
+      'transaction.confirmed',
+      {
+        txHash: transaction.txHash,
+        type: 'WITHDRAWAL',
+        status: transaction.status,
+        assetSymbol,
+        amount,
+        protocolName,
+        userId,
+      }
+    ).catch(() => {})
   }
 
   return {
@@ -389,6 +400,8 @@ export async function processOnChainTransaction(
       status: transaction.status,
     })
 
+    // Notification already dispatched inside executeWithdraw above — do not
+    // re-publish here (that would double-fire transaction.confirmed).
     return res.status(201).json({
       txHash: transaction.txHash,
       status: transaction.status,

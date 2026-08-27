@@ -6,7 +6,8 @@ import {
 } from '../utils/correlation'
 import { recordJobSuccess, recordJobFailure } from '../utils/job-metrics'
 import { config } from '../config/env'
-import { dispatchWebhookEvent } from '../services/webhookDispatcher'
+import { publishUserEvent } from '../events/publisher'
+import { EVENT_TYPE_TOPIC } from '../events/types'
 import { sendWhatsAppMessage } from '../utils/twilio-client'
 import { formatAlertTriggeredReply } from '../whatsapp/formatters'
 import {
@@ -24,7 +25,9 @@ import {
  * On each tick this job loads ACTIVE rules, computes the current value for each
  * rule's metric, and fires a notification when the comparator condition holds
  * and the rule is outside its cooldown window. Fires go out over the webhook
- * (HMAC-signed, via the existing dispatchWebhookEvent) and/or WhatsApp channels.
+ * (HMAC-signed, via publishUserEvent's webhook leg) and/or WhatsApp channels.
+ * Every trigger also lands on the user's real-time stream (#316), which is not
+ * something they have to configure.
  *
  * Design decisions (see issue #289):
  *
@@ -47,7 +50,7 @@ import {
  *    row is auto-deactivated (isActive=false) with a clear log line rather than
  *    evaluated against stale/missing data.
  *
- *  • Failed webhook delivery: we reuse dispatchWebhookEvent as-is. Its internal
+ *  • Failed webhook delivery: publishUserEvent reuses the same dispatcher. Its internal
  *    3-attempt backoff is the only retry; there is no separate sweep for alert
  *    deliveries. Rationale documented in docs/ALERTS.md — the next tick re-
  *    evaluates the live condition, so a transient delivery failure self-heals
@@ -200,10 +203,17 @@ async function deliverAlert(
   const wantsWhatsApp =
     rule.deliveryChannel === 'WHATSAPP' || rule.deliveryChannel === 'BOTH'
 
-  if (wantsWebhook) {
-    // HMAC-signed via the existing dispatcher; no new unsigned path.
-    await dispatchWebhookEvent('alert_rule.triggered', data)
-  }
+  // #316: the alert always reaches the user's real-time stream — that is the
+  // channel they did not have to configure. The webhook leg stays opt-in via
+  // the rule's deliveryChannel, and is still HMAC-signed by the same
+  // dispatcher; no new unsigned path.
+  await publishUserEvent(
+    rule.userId,
+    EVENT_TYPE_TOPIC['alert_rule.triggered'],
+    'alert_rule.triggered',
+    data,
+    { webhook: wantsWebhook }
+  )
 
   if (wantsWhatsApp) {
     const user = await db.user.findUnique({

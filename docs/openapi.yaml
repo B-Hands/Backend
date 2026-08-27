@@ -21,6 +21,12 @@ tags:
     description: Authentication and session management
   - name: Portfolio
     description: User portfolio management
+  - name: Realtime
+    description: |
+      Authenticated WebSocket streaming (#316). The handshake below is a real
+      HTTP request and is spec'd here so generated clients know how to open it;
+      everything after the 101 is the JSON subprotocol described in the
+      `WebSocket*` schemas and in docs/WEBSOCKET_STREAMING.md.
 
 # ─── Reusable components ──────────────────────────────────────────────────────
 components:
@@ -261,6 +267,295 @@ components:
           example: Unauthorized
       required:
         - error
+
+    # ── Real-time WebSocket subprotocol (#316) ───────────────────────────────
+    #
+    # These are not request/response bodies: they are the JSON frames exchanged
+    # over the socket opened by `GET /ws`. They live in the spec so client
+    # generators and reviewers have one authoritative shape per frame.
+
+    WebSocketTopic:
+      type: string
+      enum: [portfolio, transactions, agent, alerts, strategies]
+      description: |
+        Subscription, ordering, and permission unit.
+
+        **Ordering**: within a topic, events arrive in ascending `seq`. Across
+        topics there is NO ordering guarantee — all topics share one per-user
+        sequence, so use `seq` rather than arrival order. On-chain events
+        inherit ProcessedEvent's ledger ordering upstream.
+
+    WebSocketSubscribe:
+      type: object
+      description: Client → server. Start live delivery for the given topics.
+      required: [type, topics]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [subscribe]
+        topics:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/WebSocketTopic'
+        coalesce:
+          type: boolean
+          default: false
+          description: |
+            Opt into latest-wins coalescing of same-type bursts within a short
+            window (WS_COALESCE_WINDOW_MS). Suppressed events remain in the
+            durable stream but are NOT redelivered by a later `resume`, because
+            `afterSeq` has already moved past them. Off by default.
+
+    WebSocketResume:
+      type: object
+      description: |
+        Client → server. Replay everything after `afterSeq`, then switch to live.
+        Send this on every reconnect.
+      required: [type, topics, afterSeq]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [resume]
+        topics:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/WebSocketTopic'
+        afterSeq:
+          type: integer
+          minimum: 0
+          description: Last `seq` the client durably processed. 0 replays everything retained.
+        coalesce:
+          type: boolean
+          default: false
+
+    WebSocketUnsubscribe:
+      type: object
+      description: Client → server. Stop delivery for the given topics.
+      required: [type, topics]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [unsubscribe]
+        topics:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/WebSocketTopic'
+
+    WebSocketPing:
+      type: object
+      description: |
+        Client → server. Application-level keepalive, answered with `pong`. Only
+        needed by clients that cannot observe protocol-level pongs (browsers);
+        the server pings every `heartbeatIntervalMs` regardless.
+      required: [type]
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          enum: [ping]
+
+    WebSocketClientMessage:
+      description: |
+        Every message a client may send. The receive side is a control channel
+        only — v1 is server→client for data. State-changing operations stay on
+        the REST surface, which has the validation, idempotency, and audit trail
+        a socket does not.
+      oneOf:
+        - $ref: '#/components/schemas/WebSocketSubscribe'
+        - $ref: '#/components/schemas/WebSocketResume'
+        - $ref: '#/components/schemas/WebSocketUnsubscribe'
+        - $ref: '#/components/schemas/WebSocketPing'
+
+    WebSocketHello:
+      type: object
+      description: Server → client. First frame after a successful handshake.
+      required: [type, actor, topics, currentSeq, heartbeatIntervalMs]
+      properties:
+        type:
+          type: string
+          enum: [hello]
+        actor:
+          type: string
+          enum: [self, delegated]
+          description: |
+            `delegated` when the connection was opened with `?actor=<userId>`
+            and an ACTIVE sub-account grant authorised it.
+        topics:
+          type: array
+          description: Topics this connection may subscribe to, derived server-side.
+          items:
+            $ref: '#/components/schemas/WebSocketTopic'
+        currentSeq:
+          type: integer
+          description: Newest `seq` on the bound stream right now.
+        heartbeatIntervalMs:
+          type: integer
+
+    WebSocketSubscribed:
+      type: object
+      description: Server → client. Acknowledges the active subscription set.
+      required: [type, topics, currentSeq, coalesce]
+      properties:
+        type:
+          type: string
+          enum: [subscribed]
+        topics:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebSocketTopic'
+        currentSeq:
+          type: integer
+        coalesce:
+          type: boolean
+
+    WebSocketEvent:
+      type: object
+      description: |
+        Server → client. One domain event.
+
+        **Delivery is at-least-once.** A `resume` replays from the durable store
+        while live events keep arriving, and the live-switch prefers a duplicate
+        over a hole. Dedupe on `seq`, which is monotonic per user.
+
+        **Payloads are allowlisted per event type** by the same discipline as
+        REST responses (src/utils/api-formatters.ts). No `userId`, wallet
+        address, key, or internal field appears here.
+      required: [type, seq, topic, event, payload, emittedAt]
+      properties:
+        type:
+          type: string
+          enum: [event]
+        seq:
+          type: integer
+          description: Monotonic per-user sequence number. Track the highest you processed.
+        topic:
+          $ref: '#/components/schemas/WebSocketTopic'
+        event:
+          type: string
+          description: Domain event type, e.g. `deposit.received`.
+          example: deposit.received
+        payload:
+          type: object
+          additionalProperties: true
+        emittedAt:
+          type: string
+          format: date-time
+
+    WebSocketReplay:
+      type: object
+      description: Server → client. Brackets the replay served for a `resume`.
+      required: [type, status, fromSeq, toSeq, count]
+      properties:
+        type:
+          type: string
+          enum: [replay]
+        status:
+          type: string
+          enum: [start, end]
+        fromSeq:
+          type: integer
+        toSeq:
+          type: integer
+        count:
+          type: integer
+
+    WebSocketGap:
+      type: object
+      description: |
+        Server → client. The stream could not be served continuously.
+
+        * `retention` — the requested `afterSeq` is older than what is retained,
+          or a single replay hit its page limit with history still to come.
+        * `backpressure` — the client was too slow; delivery stopped at
+          `afterSeq`. Nothing is lost; `resume` from there.
+        * `unknown_stream` — the requested `afterSeq` is ahead of the server.
+
+        When `snapshotRequired` is true, replay cannot close the gap: fetch a
+        REST snapshot (`/portfolio`, `/transactions`, …) and then `subscribe`.
+      required: [type, reason, afterSeq, currentSeq, oldestAvailableSeq, snapshotRequired]
+      properties:
+        type:
+          type: string
+          enum: [gap]
+        reason:
+          type: string
+          enum: [retention, backpressure, unknown_stream]
+        afterSeq:
+          type: integer
+          nullable: true
+        currentSeq:
+          type: integer
+        oldestAvailableSeq:
+          type: integer
+          nullable: true
+        snapshotRequired:
+          type: boolean
+
+    WebSocketError:
+      type: object
+      description: |
+        Server → client. `forbidden` mirrors REST 403 semantics — a topic the
+        connection's grant does not cover. `unauthorized` precedes a close with
+        code 4408 when the session is revoked mid-connection.
+      required: [type, code, message]
+      properties:
+        type:
+          type: string
+          enum: [error]
+        code:
+          type: string
+          enum: [bad_request, forbidden, unauthorized, rate_limited, internal]
+        message:
+          type: string
+
+    WebSocketDraining:
+      type: object
+      description: |
+        Server → client. Sent before a graceful shutdown closes the socket with
+        code 1001. Reconnect after `retryAfterMs` and `resume` from
+        `resumeAfterSeq`.
+      required: [type, reason, resumeAfterSeq, retryAfterMs]
+      properties:
+        type:
+          type: string
+          enum: [draining]
+        reason:
+          type: string
+          enum: [server_shutdown]
+        resumeAfterSeq:
+          type: integer
+        retryAfterMs:
+          type: integer
+
+    WebSocketPong:
+      type: object
+      description: Server → client. Reply to an application-level `ping`.
+      required: [type, at]
+      properties:
+        type:
+          type: string
+          enum: [pong]
+        at:
+          type: string
+          format: date-time
+
+    WebSocketServerFrame:
+      description: Every frame the server may send.
+      oneOf:
+        - $ref: '#/components/schemas/WebSocketHello'
+        - $ref: '#/components/schemas/WebSocketSubscribed'
+        - $ref: '#/components/schemas/WebSocketEvent'
+        - $ref: '#/components/schemas/WebSocketReplay'
+        - $ref: '#/components/schemas/WebSocketGap'
+        - $ref: '#/components/schemas/WebSocketError'
+        - $ref: '#/components/schemas/WebSocketDraining'
+        - $ref: '#/components/schemas/WebSocketPong'
 
   responses:
     Unauthorized:
@@ -534,6 +829,134 @@ paths:
                     type: array
                     items:
                       type: object
+
+  # ── Real-time WebSocket stream (#316) ─────────────────────────────────────────
+
+  /ws:
+    get:
+      operationId: openRealtimeStream
+      summary: Open the authenticated real-time event stream
+      description: |
+        Upgrades to a WebSocket carrying this user's live, sequence-numbered
+        event stream. Not a REST endpoint: the only HTTP response a client
+        should ever see is a rejection — success is a `101 Switching Protocols`
+        followed by the JSON subprotocol below.
+
+        Full client contract, including reconnect policy and worked examples:
+        `docs/WEBSOCKET_STREAMING.md`.
+
+        ### Authentication
+        The same JWT + live-session check the REST middleware performs, run
+        BEFORE the protocol switch — an unauthenticated peer gets a 401 and
+        never becomes a WebSocket. There is no anonymous channel.
+
+        Send the token either as `Authorization: Bearer <jwt>` (server-side
+        clients) or as the subprotocol pair `Sec-WebSocket-Protocol: bearer,
+        <jwt>` (browsers, which cannot set headers on a WebSocket). A `?token=`
+        query parameter is deliberately NOT accepted: URLs reach access logs,
+        proxy logs, and referrers, and this token is a live session.
+
+        A session revoked while the socket is open closes it with code 4408 —
+        the server rechecks the session periodically rather than trusting the
+        handshake forever.
+
+        ### Message flow
+        1. Server sends `hello` with the topics you may read and `currentSeq`.
+        2. Client sends `subscribe` (live from now) or `resume` (replay first).
+        3. Server sends `event` frames; each carries a monotonic per-user `seq`.
+        4. On reconnect, client sends `resume` with the highest `seq` it
+           durably processed. Missed events replay, then live resumes.
+
+        ### Delivery guarantees
+        At-least-once, with a duplication window around a reconnect — dedupe on
+        `seq`. Within a topic, events are ordered; across topics they are not.
+
+        ### Heartbeat and idle policy
+        The server pings every `heartbeatIntervalMs` (default 30s). A connection
+        that neither pongs nor sends a frame for `WS_IDLE_TIMEOUT_MS` (default
+        90s) is closed with code 4408. Clients that cannot observe protocol
+        pongs may send `{"type":"ping"}` instead.
+
+        ### Backpressure
+        A slow consumer is never buffered without bound. Past the per-connection
+        bound the server stops delivering, sends one `gap` frame with reason
+        `backpressure`, and waits for a `resume`. Nothing is lost — the durable
+        stream still holds every event.
+
+        ### Limits
+        Handshakes are rate-limited per source IP (`429` on the upgrade), client
+        messages per connection (`rate_limited` error frame, then close 4429),
+        and each user may hold `WS_MAX_CONNECTIONS_PER_USER` sockets per pod.
+
+        ### Close codes
+        | Code | Meaning |
+        |------|---------|
+        | 1000 | Normal closure |
+        | 1001 | Server draining (preceded by a `draining` frame) |
+        | 4401 | Unauthenticated |
+        | 4403 | Actor not permitted |
+        | 4408 | Session revoked, or idle timeout |
+        | 4429 | Message rate limit exceeded |
+      tags: [Realtime]
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: actor
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: |
+            Bind the connection to a sub-account's stream instead of your own.
+            The ACTIVE `SubAccount` grant is verified server-side and its
+            permissions decide the readable topics (`VIEW` → portfolio,
+            transactions, agent, alerts; `MANAGE_STRATEGY` → strategies).
+            Same enforcement as the REST `actingAsUserId` routes; the client's
+            opinion about its own scope is never consulted.
+        - name: Sec-WebSocket-Protocol
+          in: header
+          required: false
+          schema:
+            type: string
+            example: bearer, eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+          description: Browser alternative to the Authorization header.
+      requestBody:
+        required: false
+        description: |
+          Not an HTTP body — documents the frames the client sends over the
+          socket after the upgrade.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebSocketClientMessage'
+      responses:
+        '101':
+          description: |
+            Protocol switched. Every subsequent server frame is one of
+            `WebSocketServerFrame`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebSocketServerFrame'
+        '401':
+          description: Missing, malformed, expired, or revoked credentials.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedError'
+        '403':
+          description: No ACTIVE sub-account grant for the requested `actor`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedError'
+        '429':
+          description: Handshake rate limit, or too many concurrent connections.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnauthorizedError'
 
   # ── Health ────────────────────────────────────────────────────────────────────
 
