@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { requireAuth } from '../middleware/authenticate'
+import { requireScope, requireWithdrawScope } from '../middleware/apiKeyAuth'
+import { idempotent } from '../middleware/idempotency'
 import { requireSubAccountPermission } from '../middleware/subAccount'
 import { validate } from '../middleware/validate'
 import { processOnChainTransaction } from '../controllers/transaction-controller'
@@ -18,6 +20,9 @@ const withdrawSchema = z.object({
 router.post(
   '/',
   requireAuth,
+  requireScope('withdraw:write'),
+  requireWithdrawScope,
+  idempotent({ required: true, failClosed: true, ttlSeconds: 86400 }),
   validate({ body: withdrawSchema, errorMessage: 'Validation error' }),
   requireSubAccountPermission('WITHDRAW'),
   async (req: Request, res: Response) => {

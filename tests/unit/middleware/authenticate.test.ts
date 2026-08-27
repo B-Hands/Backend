@@ -19,6 +19,7 @@ jest.mock('../../../src/db', () => ({
     session: {
       findUnique: jest.fn(),
       delete: jest.fn(),
+      update: jest.fn().mockResolvedValue({}),
     },
     user: {
       findUnique: jest.fn(),
