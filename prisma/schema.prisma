@@ -710,17 +710,21 @@ enum WebhookDeliveryStatus {
 }
 
 model WebhookSubscription {
-  id        String   @id @default(uuid())
-  userId    String
-  url       String
-  events    String[]
-  secret    String
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                 String    @id @default(uuid())
+  userId             String
+  url                String
+  events             String[]
+  secret             String
+  secretNext         String?
+  secretNextActiveAt DateTime?
+  isActive           Boolean   @default(true)
+  autoReplay         Boolean   @default(false)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
-  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  deliveries WebhookDelivery[]
+  user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries  WebhookDelivery[]
+  deadLetters WebhookDeadLetter[]
 
   @@index([userId])
   @@map("webhook_subscriptions")
@@ -744,6 +748,23 @@ model WebhookDelivery {
   @@index([status])
   @@index([createdAt])
   @@map("webhook_deliveries")
+}
+
+model WebhookDeadLetter {
+  id             String   @id @default(uuid())
+  subscriptionId String
+  event          String
+  payload        Json
+  firstFailedAt  DateTime
+  lastError      String
+  attempts       Int
+  status         String   // PENDING | REPLAYED | RESOLVED | DISCARDED
+  createdAt      DateTime @default(now())
+
+  subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId, status])
+  @@map("webhook_dead_letters")
 }
 
 /// User-defined price & yield alert rule (#289).
