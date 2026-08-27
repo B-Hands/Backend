@@ -27,8 +27,8 @@ jest.mock('../../../src/db', () => ({
 jest.mock('../../../src/controllers/transaction-controller', () => ({
   executeDeposit: jest.fn(),
 }))
-jest.mock('../../../src/services/webhookDispatcher', () => ({
-  dispatchWebhookEvent: jest.fn().mockResolvedValue(undefined),
+jest.mock('../../../src/events/publisher', () => ({
+  publishUserEvent: jest.fn().mockResolvedValue(undefined),
 }))
 jest.mock('../../../src/utils/metrics', () => ({
   recordBackgroundJob: jest.fn(),
@@ -40,12 +40,12 @@ jest.mock('../../../src/utils/job-metrics', () => ({
 
 import db from '../../../src/db'
 import { executeDeposit } from '../../../src/controllers/transaction-controller'
-import { dispatchWebhookEvent } from '../../../src/services/webhookDispatcher'
+import { publishUserEvent } from '../../../src/events/publisher'
 import { processRecurringDeposits } from '../../../src/jobs/recurringDeposits'
 
 const mockDb = db as any
 const mockExecuteDeposit = executeDeposit as jest.Mock
-const mockDispatch = dispatchWebhookEvent as jest.Mock
+const mockPublish = publishUserEvent as jest.Mock
 
 const plan = {
   id: 'plan-1',
@@ -85,11 +85,15 @@ it('marks the occurrence pending_approval without advancing nextRunAt or firing 
   expect(statusUpdate).toBeDefined()
   expect(statusUpdate[0].data.nextRunAt).toBeUndefined()
 
-  expect(mockDispatch).not.toHaveBeenCalledWith(
+  expect(mockPublish).not.toHaveBeenCalledWith(
+    expect.anything(),
+    expect.anything(),
     'recurring_deposit.failed',
     expect.anything()
   )
-  expect(mockDispatch).not.toHaveBeenCalledWith(
+  expect(mockPublish).not.toHaveBeenCalledWith(
+    expect.anything(),
+    expect.anything(),
     'recurring_deposit.executed',
     expect.anything()
   )
@@ -103,7 +107,9 @@ it('still executes normally when the guard allows (CONFIRMED)', async () => {
 
   await processRecurringDeposits()
 
-  expect(mockDispatch).toHaveBeenCalledWith(
+  expect(mockPublish).toHaveBeenCalledWith(
+    'user-1',
+    expect.anything(),
     'recurring_deposit.executed',
     expect.objectContaining({ planId: 'plan-1' })
   )
