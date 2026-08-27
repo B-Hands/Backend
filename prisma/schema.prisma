@@ -169,6 +169,8 @@ enum DeliveryChannel {
   WEBHOOK
   WHATSAPP
   BOTH
+  EMAIL
+  ALL
 }
 
 enum SubAccountPermission {
@@ -225,6 +227,8 @@ model User {
   portfolioRiskAggregates PortfolioRiskAggregate[]
   userEvents              UserEvent[]
   userEventSequence       UserEventSequence?
+  userWebhookEndpoints    UserWebhookEndpoint[]
+  emailIdentity           EmailIdentity?
 
   @@map("users")
 }
@@ -717,6 +721,8 @@ model AlertRule {
   deliveryChannel DeliveryChannel
   cooldownMinutes Int             @default(60)
   lastFiredAt     DateTime?
+  snoozedUntil    DateTime?
+  snoozeReason    String?
   isActive        Boolean         @default(true)
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
@@ -1279,3 +1285,93 @@ model UserEventSequence {
 
   @@map("user_event_sequences")
 }
+
+model UserWebhookEndpoint {
+  id                  String     @id @default(uuid())
+  userId              String
+  url                 String
+  secretHash          String
+  events              String[]
+  topicScope          String[]
+  filterJson          Json?
+  status              String     @default("ACTIVE") // ACTIVE | PAUSED | DISABLED_BAD_ENDPOINT
+  consecutiveFailures Int        @default(0)
+  lastDeliveryAt      DateTime?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  user       User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries UserWebhookDelivery[]
+
+  @@index([userId, status])
+  @@map("user_webhook_endpoints")
+}
+
+model UserWebhookDelivery {
+  id            String    @id @default(uuid())
+  endpointId    String
+  userEventSeq  Int
+  eventType     String
+  status        String    @default("PENDING") // PENDING | DELIVERED | FAILED | DEAD
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime?
+  responseCode  Int?
+  error         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  endpoint UserWebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+
+  @@unique([endpointId, userEventSeq])
+  @@index([endpointId])
+  @@index([status])
+  @@map("user_webhook_deliveries")
+}
+
+model AlertFire {
+  id                 String   @id @default(uuid())
+  ruleId             String
+  userId             String
+  firedAt            DateTime @default(now())
+  leafTrace          Json
+  deliveredVia       String[]
+  ackId              String?
+  escalated          Boolean  @default(false)
+  suppressedBySnooze Boolean  @default(false)
+
+  @@index([ruleId, firedAt])
+  @@index([userId, firedAt])
+  @@map("alert_fires")
+}
+
+model AlertAck {
+  id        String   @id @default(uuid())
+  ruleId    String
+  userId    String
+  fireId    String?
+  source    String   // API | WHATSAPP | TELEGRAM | EMAIL
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([ruleId])
+  @@index([userId])
+  @@map("alert_acks")
+}
+
+model EmailIdentity {
+  id              String    @id @default(uuid())
+  userId          String    @unique
+  email           String    @unique
+  verifiedAt      DateTime?
+  verifyTokenHash String?
+  verifyExpiresAt DateTime?
+  status          String    @default("PENDING") // PENDING | VERIFIED | BOUNCED | COMPLAINED | SUPPRESSED
+  lastBounceAt    DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("email_identities")
+}
+
