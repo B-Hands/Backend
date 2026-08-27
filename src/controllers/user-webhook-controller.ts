@@ -1,46 +1,49 @@
-import crypto from 'node:crypto';
-import { Request, Response } from 'express';
-import db from '../db';
-import { logger } from '../utils/logger';
+import crypto from 'node:crypto'
+import { Request, Response } from 'express'
+import db from '../db'
+import { logger } from '../utils/logger'
 import {
   validateSsrfUrl,
   hashSecret,
   enqueueUserWebhooks,
-} from '../services/userWebhookDispatcher';
-import { validateFilterPredicate } from '../utils/userWebhookFilter';
+} from '../services/userWebhookDispatcher'
+import { validateFilterPredicate } from '../utils/userWebhookFilter'
 
-export async function createEndpoint(req: Request, res: Response): Promise<void> {
-  const userId = (req as any).user?.id || (req as any).userId;
+export async function createEndpoint(
+  req: Request,
+  res: Response
+): Promise<void> {
+  const userId = (req as any).user?.id || (req as any).userId
   if (!userId) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
+    res.status(401).json({ error: 'Unauthorized' })
+    return
   }
 
-  const { url, events = [], topicScope = [], filterJson = null } = req.body;
+  const { url, events = [], topicScope = [], filterJson = null } = req.body
 
   if (!url || typeof url !== 'string') {
-    res.status(400).json({ error: 'Valid URL is required' });
-    return;
+    res.status(400).json({ error: 'Valid URL is required' })
+    return
   }
 
   try {
-    validateSsrfUrl(url);
+    validateSsrfUrl(url)
   } catch (err: any) {
-    res.status(400).json({ error: err.message });
-    return;
+    res.status(400).json({ error: err.message })
+    return
   }
 
   if (filterJson) {
     try {
-      validateFilterPredicate(filterJson);
+      validateFilterPredicate(filterJson)
     } catch (err: any) {
-      res.status(400).json({ error: `Invalid filterJson: ${err.message}` });
-      return;
+      res.status(400).json({ error: `Invalid filterJson: ${err.message}` })
+      return
     }
   }
 
-  const rawSecret = `whsec_${crypto.randomBytes(24).toString('hex')}`;
-  const secretHash = hashSecret(rawSecret);
+  const rawSecret = `whsec_${crypto.randomBytes(24).toString('hex')}`
+  const secretHash = hashSecret(rawSecret)
 
   try {
     const endpoint = await db.userWebhookEndpoint.create({
@@ -53,7 +56,7 @@ export async function createEndpoint(req: Request, res: Response): Promise<void>
         filterJson: filterJson || undefined,
         status: 'ACTIVE',
       },
-    });
+    })
 
     res.status(201).json({
       endpoint: {
@@ -67,18 +70,23 @@ export async function createEndpoint(req: Request, res: Response): Promise<void>
         createdAt: endpoint.createdAt,
       },
       secret: rawSecret, // Returned ONLY ONCE on creation
-    });
+    })
   } catch (err: any) {
-    logger.error('[UserWebhookController] Failed to create endpoint', { error: err.message });
-    res.status(500).json({ error: 'Failed to create webhook endpoint' });
+    logger.error('[UserWebhookController] Failed to create endpoint', {
+      error: err.message,
+    })
+    res.status(500).json({ error: 'Failed to create webhook endpoint' })
   }
 }
 
-export async function listEndpoints(req: Request, res: Response): Promise<void> {
-  const userId = (req as any).user?.id || (req as any).userId;
+export async function listEndpoints(
+  req: Request,
+  res: Response
+): Promise<void> {
+  const userId = (req as any).user?.id || (req as any).userId
   if (!userId) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
+    res.status(401).json({ error: 'Unauthorized' })
+    return
   }
 
   try {
@@ -98,17 +106,17 @@ export async function listEndpoints(req: Request, res: Response): Promise<void> 
         updatedAt: true,
       },
       orderBy: { createdAt: 'desc' },
-    });
+    })
 
-    res.json({ endpoints });
+    res.json({ endpoints })
   } catch (err: any) {
-    res.status(500).json({ error: 'Failed to list webhook endpoints' });
+    res.status(500).json({ error: 'Failed to list webhook endpoints' })
   }
 }
 
 export async function getEndpoint(req: Request, res: Response): Promise<void> {
-  const userId = (req as any).user?.id || (req as any).userId;
-  const { id } = req.params;
+  const userId = (req as any).user?.id || (req as any).userId
+  const { id } = req.params
 
   try {
     const endpoint = await db.userWebhookEndpoint.findFirst({
@@ -126,37 +134,42 @@ export async function getEndpoint(req: Request, res: Response): Promise<void> {
         createdAt: true,
         updatedAt: true,
       },
-    });
+    })
 
     if (!endpoint) {
-      res.status(404).json({ error: 'Endpoint not found' });
-      return;
+      res.status(404).json({ error: 'Endpoint not found' })
+      return
     }
 
-    res.json({ endpoint });
+    res.json({ endpoint })
   } catch (err: any) {
-    res.status(500).json({ error: 'Failed to fetch endpoint' });
+    res.status(500).json({ error: 'Failed to fetch endpoint' })
   }
 }
 
-export async function updateEndpoint(req: Request, res: Response): Promise<void> {
-  const userId = (req as any).user?.id || (req as any).userId;
-  const { id } = req.params;
-  const { url, events, topicScope, filterJson, status } = req.body;
+export async function updateEndpoint(
+  req: Request,
+  res: Response
+): Promise<void> {
+  const userId = (req as any).user?.id || (req as any).userId
+  const { id } = req.params
+  const { url, events, topicScope, filterJson, status } = req.body
 
   try {
-    const existing = await db.userWebhookEndpoint.findFirst({ where: { id, userId } });
+    const existing = await db.userWebhookEndpoint.findFirst({
+      where: { id, userId },
+    })
     if (!existing) {
-      res.status(404).json({ error: 'Endpoint not found' });
-      return;
+      res.status(404).json({ error: 'Endpoint not found' })
+      return
     }
 
     if (url) {
-      validateSsrfUrl(url);
+      validateSsrfUrl(url)
     }
 
     if (filterJson) {
-      validateFilterPredicate(filterJson);
+      validateFilterPredicate(filterJson)
     }
 
     const updated = await db.userWebhookEndpoint.update({
@@ -178,97 +191,114 @@ export async function updateEndpoint(req: Request, res: Response): Promise<void>
         status: true,
         updatedAt: true,
       },
-    });
+    })
 
-    res.json({ endpoint: updated });
+    res.json({ endpoint: updated })
   } catch (err: any) {
-    res.status(400).json({ error: err.message || 'Failed to update endpoint' });
+    res.status(400).json({ error: err.message || 'Failed to update endpoint' })
   }
 }
 
-export async function deleteEndpoint(req: Request, res: Response): Promise<void> {
-  const userId = (req as any).user?.id || (req as any).userId;
-  const { id } = req.params;
+export async function deleteEndpoint(
+  req: Request,
+  res: Response
+): Promise<void> {
+  const userId = (req as any).user?.id || (req as any).userId
+  const { id } = req.params
 
   try {
-    const existing = await db.userWebhookEndpoint.findFirst({ where: { id, userId } });
+    const existing = await db.userWebhookEndpoint.findFirst({
+      where: { id, userId },
+    })
     if (!existing) {
-      res.status(404).json({ error: 'Endpoint not found' });
-      return;
+      res.status(404).json({ error: 'Endpoint not found' })
+      return
     }
 
-    await db.userWebhookEndpoint.delete({ where: { id } });
-    res.json({ success: true, message: 'Endpoint deleted successfully' });
+    await db.userWebhookEndpoint.delete({ where: { id } })
+    res.json({ success: true, message: 'Endpoint deleted successfully' })
   } catch (err: any) {
-    res.status(500).json({ error: 'Failed to delete endpoint' });
+    res.status(500).json({ error: 'Failed to delete endpoint' })
   }
 }
 
 export async function rotateSecret(req: Request, res: Response): Promise<void> {
-  const userId = (req as any).user?.id || (req as any).userId;
-  const { id } = req.params;
+  const userId = (req as any).user?.id || (req as any).userId
+  const { id } = req.params
 
   try {
-    const existing = await db.userWebhookEndpoint.findFirst({ where: { id, userId } });
+    const existing = await db.userWebhookEndpoint.findFirst({
+      where: { id, userId },
+    })
     if (!existing) {
-      res.status(404).json({ error: 'Endpoint not found' });
-      return;
+      res.status(404).json({ error: 'Endpoint not found' })
+      return
     }
 
-    const newSecret = `whsec_${crypto.randomBytes(24).toString('hex')}`;
-    const secretHash = hashSecret(newSecret);
+    const newSecret = `whsec_${crypto.randomBytes(24).toString('hex')}`
+    const secretHash = hashSecret(newSecret)
 
     await db.userWebhookEndpoint.update({
       where: { id },
       data: { secretHash },
-    });
+    })
 
     res.json({
       success: true,
       endpointId: id,
       secret: newSecret, // Returned ONCE on rotation
-    });
+    })
   } catch (err: any) {
-    res.status(500).json({ error: 'Failed to rotate secret' });
+    res.status(500).json({ error: 'Failed to rotate secret' })
   }
 }
 
 export async function sendTestPing(req: Request, res: Response): Promise<void> {
-  const userId = (req as any).user?.id || (req as any).userId;
-  const { id } = req.params;
+  const userId = (req as any).user?.id || (req as any).userId
+  const { id } = req.params
 
   try {
-    const endpoint = await db.userWebhookEndpoint.findFirst({ where: { id, userId } });
+    const endpoint = await db.userWebhookEndpoint.findFirst({
+      where: { id, userId },
+    })
     if (!endpoint) {
-      res.status(404).json({ error: 'Endpoint not found' });
-      return;
+      res.status(404).json({ error: 'Endpoint not found' })
+      return
     }
 
-    const testSeq = Math.floor(Date.now() / 1000);
+    const testSeq = Math.floor(Date.now() / 1000)
     const testPayload = {
       event: 'webhook.test',
       timestamp: new Date().toISOString(),
       message: 'Test ping event from NeuroWealth user webhooks',
-    };
+    }
 
-    await enqueueUserWebhooks(userId, 'alerts', 'webhook.test', testSeq, testPayload);
+    await enqueueUserWebhooks(
+      userId,
+      'alerts',
+      'webhook.test',
+      testSeq,
+      testPayload
+    )
 
-    res.json({ success: true, message: 'Test webhook event enqueued' });
+    res.json({ success: true, message: 'Test webhook event enqueued' })
   } catch (err: any) {
-    res.status(500).json({ error: 'Failed to send test ping' });
+    res.status(500).json({ error: 'Failed to send test ping' })
   }
 }
 
 export async function replayEvents(req: Request, res: Response): Promise<void> {
-  const userId = (req as any).user?.id || (req as any).userId;
-  const { id } = req.params;
-  const afterSeq = parseInt(req.query.afterSeq as string || '0', 10);
+  const userId = (req as any).user?.id || (req as any).userId
+  const { id } = req.params
+  const afterSeq = parseInt((req.query.afterSeq as string) || '0', 10)
 
   try {
-    const endpoint = await db.userWebhookEndpoint.findFirst({ where: { id, userId } });
+    const endpoint = await db.userWebhookEndpoint.findFirst({
+      where: { id, userId },
+    })
     if (!endpoint) {
-      res.status(404).json({ error: 'Endpoint not found' });
-      return;
+      res.status(404).json({ error: 'Endpoint not found' })
+      return
     }
 
     // Query durable UserEvent stream
@@ -279,20 +309,20 @@ export async function replayEvents(req: Request, res: Response): Promise<void> {
       },
       orderBy: { seq: 'asc' },
       take: 100,
-    });
+    })
 
-    let earliestAvailableSeq = afterSeq;
+    let earliestAvailableSeq = afterSeq
     if (events.length > 0) {
-      earliestAvailableSeq = Number(events[0].seq);
+      earliestAvailableSeq = Number(events[0].seq)
     } else {
       const earliest = await db.userEvent.findFirst({
         where: { userId },
         orderBy: { seq: 'asc' },
-      });
-      if (earliest) earliestAvailableSeq = Number(earliest.seq);
+      })
+      if (earliest) earliestAvailableSeq = Number(earliest.seq)
     }
 
-    let enqueuedCount = 0;
+    let enqueuedCount = 0
     for (const evt of events) {
       try {
         await db.userWebhookDelivery.create({
@@ -304,8 +334,8 @@ export async function replayEvents(req: Request, res: Response): Promise<void> {
             attempts: 0,
             nextAttemptAt: new Date(),
           },
-        });
-        enqueuedCount++;
+        })
+        enqueuedCount++
       } catch (err: any) {
         // Skip duplicate
       }
@@ -317,31 +347,36 @@ export async function replayEvents(req: Request, res: Response): Promise<void> {
       replayedEventsCount: enqueuedCount,
       requestedAfterSeq: afterSeq,
       earliestAvailableSeq,
-    });
+    })
   } catch (err: any) {
-    res.status(500).json({ error: 'Failed to replay events' });
+    res.status(500).json({ error: 'Failed to replay events' })
   }
 }
 
-export async function listDeliveries(req: Request, res: Response): Promise<void> {
-  const userId = (req as any).user?.id || (req as any).userId;
-  const { id } = req.params;
+export async function listDeliveries(
+  req: Request,
+  res: Response
+): Promise<void> {
+  const userId = (req as any).user?.id || (req as any).userId
+  const { id } = req.params
 
   try {
-    const endpoint = await db.userWebhookEndpoint.findFirst({ where: { id, userId } });
+    const endpoint = await db.userWebhookEndpoint.findFirst({
+      where: { id, userId },
+    })
     if (!endpoint) {
-      res.status(404).json({ error: 'Endpoint not found' });
-      return;
+      res.status(404).json({ error: 'Endpoint not found' })
+      return
     }
 
     const deliveries = await db.userWebhookDelivery.findMany({
       where: { endpointId: id },
       orderBy: { createdAt: 'desc' },
       take: 50,
-    });
+    })
 
-    res.json({ deliveries });
+    res.json({ deliveries })
   } catch (err: any) {
-    res.status(500).json({ error: 'Failed to list deliveries' });
+    res.status(500).json({ error: 'Failed to list deliveries' })
   }
 }
