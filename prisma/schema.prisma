@@ -229,6 +229,7 @@ model User {
   userApiKeys             UserApiKey[]
   userWebhookEndpoints    UserWebhookEndpoint[]
   emailIdentity           EmailIdentity?
+  UserEventSequence       UserEventSequence[]
 
   @@map("users")
 }
@@ -257,16 +258,16 @@ model UserApiKey {
 }
 
 model IdempotencyRecord {
-  id             String   @id @default(uuid())
+  id             String    @id @default(uuid())
   userId         String
   idempotencyKey String
   fingerprint    String
-  status         String   // in_progress | completed
+  status         String // in_progress | completed
   statusCode     Int?
   responseBody   Json?
   completedAt    DateTime?
   expiresAt      DateTime
-  createdAt      DateTime @default(now())
+  createdAt      DateTime  @default(now())
 
   @@unique([userId, idempotencyKey])
   @@index([expiresAt])
@@ -360,14 +361,14 @@ enum AuditBlockType {
 }
 
 model AuditBlock {
-  id           String        @id @default(uuid())
-  height       Int           @unique
+  id           String         @id @default(uuid())
+  height       Int            @unique
   prevHash     String
-  hash         String        @unique
+  hash         String         @unique
   blockType    AuditBlockType
-  payloadCount Int           @default(0)
+  payloadCount Int            @default(0)
   payloadHash  String
-  createdAt    DateTime      @default(now())
+  createdAt    DateTime       @default(now())
 
   @@index([blockType])
   @@index([createdAt])
@@ -375,11 +376,11 @@ model AuditBlock {
 }
 
 model AuditPayloadHash {
-  id         String   @id @default(uuid())
-  tableName  String
-  kind       String
+  id          String   @id @default(uuid())
+  tableName   String
+  kind        String
   payloadHash String
-  createdAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
 
   @@index([tableName])
   @@index([kind])
@@ -725,7 +726,7 @@ model WebhookSubscription {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   deliveries  WebhookDelivery[]
   deadLetters WebhookDeadLetter[]
 
@@ -761,7 +762,7 @@ model WebhookDeadLetter {
   firstFailedAt  DateTime
   lastError      String
   attempts       Int
-  status         String   // PENDING | REPLAYED | RESOLVED | DISCARDED
+  status         String // PENDING | REPLAYED | RESOLVED | DISCARDED
   createdAt      DateTime @default(now())
 
   subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
@@ -829,35 +830,35 @@ model SubAccount {
 /// provider's webhook alone. No plaintext bank/card details are ever stored
 /// here — the provider's hosted checkout captures all PII/payment details.
 model FiatOrder {
-  id              String          @id @default(uuid())
-  userId          String
-  provider        String // e.g. "moonpay" — provider key, no provider-specific logic elsewhere
-  providerOrderId String
-  direction       FiatDirection
-  fiatAmount      Decimal         @db.Decimal(36, 18)
-  fiatCurrency    String
-  cryptoAmount    Decimal?        @db.Decimal(36, 18)
-  assetSymbol     String
-  status          FiatOrderStatus @default(PENDING)
-  transactionId   String? // linked once the resulting on-chain Transaction is matched
-  checkoutUrl     String? // provider hosted checkout URL (on-ramp)
-  kycUrl          String? // provider KYC next-step link, surfaced to the user when required
-  failureReason   String? // populated on FAILED/REFUNDED for operator/user visibility
-  settledAt       DateTime?
+  id                  String          @id @default(uuid())
+  userId              String
+  provider            String // e.g. "moonpay" — provider key, no provider-specific logic elsewhere
+  providerOrderId     String
+  direction           FiatDirection
+  fiatAmount          Decimal         @db.Decimal(36, 18)
+  fiatCurrency        String
+  cryptoAmount        Decimal?        @db.Decimal(36, 18)
+  assetSymbol         String
+  status              FiatOrderStatus @default(PENDING)
+  transactionId       String? // linked once the resulting on-chain Transaction is matched
+  checkoutUrl         String? // provider hosted checkout URL (on-ramp)
+  kycUrl              String? // provider KYC next-step link, surfaced to the user when required
+  failureReason       String? // populated on FAILED/REFUNDED for operator/user visibility
+  settledAt           DateTime?
   // Best-execution / rate-drift protection (#313). quoteRate/quotedCryptoAmount
   // and fees are captured from the locked quote at order-creation time so
   // cryptoAmount is never an unexplained number; settledRate/settledCryptoAmount
   // are populated at on-chain settlement so the quoted-vs-settled delta is
   // always inspectable on the order itself.
-  quoteRate           Decimal?   @db.Decimal(36, 18)
-  quotedCryptoAmount  Decimal?   @db.Decimal(36, 18)
+  quoteRate           Decimal?        @db.Decimal(36, 18)
+  quotedCryptoAmount  Decimal?        @db.Decimal(36, 18)
   fees                Json? // structured FeeBreakdown; null means the provider could not price it (unpriced, never assumed 0)
   providerQuoteId     String?
   rateLockExpiresAt   DateTime?
-  settledRate         Decimal?   @db.Decimal(36, 18)
-  settledCryptoAmount Decimal?   @db.Decimal(36, 18)
-  createdAt           DateTime   @default(now())
-  updatedAt           DateTime   @updatedAt
+  settledRate         Decimal?        @db.Decimal(36, 18)
+  settledCryptoAmount Decimal?        @db.Decimal(36, 18)
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
 
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   transaction Transaction? @relation(fields: [transactionId], references: [id])
@@ -1356,18 +1357,18 @@ model UserEventSequence {
 }
 
 model UserWebhookEndpoint {
-  id                  String     @id @default(uuid())
+  id                  String    @id @default(uuid())
   userId              String
   url                 String
   secretHash          String
   events              String[]
   topicScope          String[]
   filterJson          Json?
-  status              String     @default("ACTIVE") // ACTIVE | PAUSED | DISABLED_BAD_ENDPOINT
-  consecutiveFailures Int        @default(0)
+  status              String    @default("ACTIVE") // ACTIVE | PAUSED | DISABLED_BAD_ENDPOINT
+  consecutiveFailures Int       @default(0)
   lastDeliveryAt      DateTime?
-  createdAt           DateTime   @default(now())
-  updatedAt           DateTime   @updatedAt
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   user       User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
   deliveries UserWebhookDelivery[]
@@ -1418,7 +1419,7 @@ model AlertAck {
   ruleId    String
   userId    String
   fireId    String?
-  source    String   // API | WHATSAPP | TELEGRAM | EMAIL
+  source    String // API | WHATSAPP | TELEGRAM | EMAIL
   note      String?
   createdAt DateTime @default(now())
 
@@ -1443,4 +1444,3 @@ model EmailIdentity {
 
   @@map("email_identities")
 }
-
