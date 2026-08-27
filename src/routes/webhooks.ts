@@ -311,4 +311,31 @@ router.post(
   }
 )
 
+import {
+  createEndpoint,
+  listEndpoints,
+  getEndpoint,
+  updateEndpoint,
+  deleteEndpoint,
+  rotateSecret,
+  sendTestPing,
+  replayEvents,
+  listDeliveries,
+} from '../controllers/user-webhook-controller'
+import { handleMailWebhook } from '../controllers/email-identity-controller'
+
+// Unauthenticated provider mail webhook callback (#367)
+router.post('/mail', handleMailWebhook)
+
+// User-scoped outbound webhook management endpoints (#368)
+router.post('/endpoints', createEndpoint)
+router.get('/endpoints', listEndpoints)
+router.get('/endpoints/:id', getEndpoint)
+router.patch('/endpoints/:id', updateEndpoint)
+router.delete('/endpoints/:id', deleteEndpoint)
+router.post('/endpoints/:id/rotate-secret', rotateSecret)
+router.post('/endpoints/:id/test', sendTestPing)
+router.post('/endpoints/:id/replay', replayEvents)
+router.get('/endpoints/:id/deliveries', listDeliveries)
+
 export default router
