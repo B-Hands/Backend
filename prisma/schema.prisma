@@ -226,10 +226,10 @@ model User {
   portfolioAttributions   PortfolioAttribution[]
   portfolioRiskAggregates PortfolioRiskAggregate[]
   userEvents              UserEvent[]
+  userEventSequence       UserEventSequence?
   userApiKeys             UserApiKey[]
   userWebhookEndpoints    UserWebhookEndpoint[]
   emailIdentity           EmailIdentity?
-  UserEventSequence       UserEventSequence[]
 
   @@map("users")
 }
