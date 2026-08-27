@@ -253,6 +253,23 @@ model UserApiKey {
   @@map("user_api_keys")
 }
 
+model IdempotencyRecord {
+  id             String   @id @default(uuid())
+  userId         String
+  idempotencyKey String
+  fingerprint    String
+  status         String   // in_progress | completed
+  statusCode     Int?
+  responseBody   Json?
+  completedAt    DateTime?
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+
+  @@unique([userId, idempotencyKey])
+  @@index([expiresAt])
+  @@map("idempotency_records")
+}
+
 model Session {
   id                    String    @id @default(uuid())
   userId                String
